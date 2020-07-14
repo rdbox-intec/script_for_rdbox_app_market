@@ -2,6 +2,7 @@
 import os
 import shutil
 import yaml
+import re
 from git import Repo
 
 
@@ -18,14 +19,21 @@ class Util(object):
 
 
 class Collector(object):
-    def __init__(self):
-        pass
+    def __init__(self, repo):
+        self.repo = repo
 
     def work(self):
-        repo = GithubRepos('https://github.com/bitnami/charts', 'bitnami')
-        chart_in_specific_dir = ChartInSpecificDir(repo)
-        collect_result = chart_in_specific_dir.analyze()
-        return collect_result
+        chart_in_specific_dir = ChartInSpecificDir(self.repo)
+        isolations_collect_result, dependons_collect_result = chart_in_specific_dir.analyze()
+        return isolations_collect_result, dependons_collect_result
+
+
+class Converter(object):
+    def __init__(self, instance_of_ChartInSpecificDir):
+        self.collect_result = instance_of_ChartInSpecificDir
+
+    def work(self):
+        self.collect_result.convert()
 
 
 class GithubRepos(object):
@@ -33,10 +41,11 @@ class GithubRepos(object):
     DIR = os.path.join('/tmp', '.original.charts')
     BRANCH = 'master'
 
-    def __init__(self, url, specific_dir_from_top=''):
+    def __init__(self, url, specific_dir_from_top='', check_tldr=True):
         self.url = url
         self.specific_dir_from_top = specific_dir_from_top
         self.repo_dir = os.path.join(self.DIR, self.get_account_name(), self.get_repository_name())
+        self.check_tldr = check_tldr
         try:
             shutil.rmtree(self.DIR)
         except FileNotFoundError:
@@ -47,7 +56,10 @@ class GithubRepos(object):
         return self.repo_dir
 
     def get_dirpath_with_prefix(self):
-        return os.path.join(self.get_dirpath(), self.get_specific_dir_from_top())
+        if self.specific_dir_from_top == '':
+            return self.get_dirpath()
+        else:
+            return os.path.join(self.get_dirpath(), self.get_specific_dir_from_top())
 
     def get_url(self):
         return self.url
@@ -60,6 +72,9 @@ class GithubRepos(object):
 
     def get_repository_name(self):
         return self.url.split('/')[4]
+
+    def get_check_tldr(self):
+        return self.check_tldr
 
 
 class ChartInSpecificDir(object):
@@ -87,16 +102,22 @@ class ChartInSpecificDir(object):
 
     def analyze(self):
         self.all_HelmModule_mapped_by_module_name = self._get_HelmModule_all()
-        isolations, dependon = self.excludes_unknown_dependencies()
+        isolations_collect_result, dependons_collect_result = self.excludes_unknown_dependencies()
         ###
-        invalid_key_list = isolations.get_invalid_key_list()
-        isolations.remove_by_key_list(invalid_key_list)
-        dependon.remove_by_depend_modules_list(invalid_key_list)
+        invalid_key_list = isolations_collect_result.get_invalid_key_list()
+        isolations_collect_result.remove_by_key_list(invalid_key_list)
+        dependons_collect_result.remove_by_depend_modules_list(invalid_key_list)
+        invalid_key_list = dependons_collect_result.get_invalid_key_list()
+        dependons_collect_result.remove_by_key_list(invalid_key_list)
         ###
-        collect_result = ChartInSpecificDir(self.repo)
-        collect_result.merge(isolations)
-        collect_result.merge(dependon)
-        return collect_result
+        return isolations_collect_result, dependons_collect_result
+
+    def convert(self):
+        for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
+            if not ('bitnami' in self.repo.get_url() and module_name == 'common'):
+                helm_module.specify_nodeSelector_for_rdbox()
+                helm_module.change_for_rdbox()
+                helm_module.extract_set_options_from_install_command()
 
     def remove_by_key_list(self, key_list):
         for key in list(set(key_list)):
@@ -142,9 +163,13 @@ class ChartInSpecificDir(object):
         not_has_key_nodeSelector = self._filter_nodeselector()
         invalid_imagetag = self._filter_valuesyaml_imagetag()
         deprecated = self._filter_deprecate()
+        if self.repo.get_check_tldr():
+            tldr = self._filter_tldr()
         invalid_keys += not_has_key_nodeSelector
         invalid_keys += invalid_imagetag
         invalid_keys += deprecated
+        if self.repo.get_check_tldr():
+            invalid_keys += tldr
         return list(set(invalid_keys))
 
     def _filter_nodeselector(self):
@@ -165,6 +190,8 @@ class ChartInSpecificDir(object):
                 values_not_has_key_nodeSelector.pop('common')
             except ValueError:
                 pass
+            except KeyError:
+                pass
         return list(set(values_not_has_key_nodeSelector.keys()))
 
     def _filter_valuesyaml_imagetag(self):
@@ -178,6 +205,13 @@ class ChartInSpecificDir(object):
         invalid_module = []
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             if helm_module.is_contain_deprecate_string():
+                invalid_module.append(module_name)
+        return list(set(invalid_module))
+
+    def _filter_tldr(self):
+        invalid_module = []
+        for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
+            if helm_module.is_contain_tldr_string() is False:
                 invalid_module.append(module_name)
         return list(set(invalid_module))
 
@@ -205,6 +239,7 @@ class HelmModule(object):
         self.requirements_yaml = RequirementsYaml(self.module_dir_path, module_name)
         self.values_yaml = ValuesYaml(self.module_dir_path, module_name)
         self.readme_md = ReadmeMd(self.module_dir_path, module_name)
+        self.chart_yaml = ChartYaml(self.module_dir_path, module_name)
 
     def __repr__(self):
         return str(self.requirements_yaml)
@@ -221,6 +256,9 @@ class HelmModule(object):
     def get_ReadmeMd(self):
         return self.readme_md
 
+    def get_ChartYaml(self):
+        return self.chart_yaml
+
     def has_module_of_dependencies(self, module_name):
         return self.get_RequirementsYaml().has_module_of_dependencies(module_name)
 
@@ -236,14 +274,48 @@ class HelmModule(object):
     def has_commentout_nodeSelector(self):
         return self.get_ValuesYaml().has_commentout_nodeSelector()
 
-    def correct_commentout_nodeSelector(self):
-        return self.get_ValuesYaml().correct_commentout_nodeSelector()
-
     def has_expected_structure_for_imagetag(self):
         return self.get_ValuesYaml().has_expected_structure_for_imagetag()
 
+    def correct_commentout_nodeSelector(self):
+        return self.get_ValuesYaml().correct_commentout_nodeSelector()
+
+    def specify_nodeSelector_for_rdbox(self):
+        return self.get_ValuesYaml().specify_nodeSelector_for_rdbox()
+
     def is_contain_deprecate_string(self):
         return self.get_ReadmeMd().is_contain_deprecate_string()
+
+    def is_contain_tldr_string(self):
+        return self.get_ReadmeMd().is_contain_tldr_string()
+
+    def get_install_command(self):
+        return self.get_ReadmeMd().get_install_command()
+
+    def extract_set_options_from_install_command(self):
+        return self.get_ReadmeMd().extract_set_options_from_install_command()
+
+    def change_for_rdbox(self):
+        return self.get_ChartYaml().change_for_rdbox()
+
+
+class ChartYaml(object):
+    def __init__(self, module_dir_path, module_name):
+        self.module_name = module_name
+        self.full_path = os.path.join(module_dir_path, 'Chart.yaml')
+
+    def change_for_rdbox(self):
+        file_text = ''
+        with open(self.full_path) as file:
+            try:
+                obj_values = yaml.safe_load(file)
+                obj_values['maintainers'] = [{'name': 'RDBOX Project', 'email': 'info-rdbox@intec.co.jp'}]
+                file_text = yaml.dump(obj_values)
+            except Exception as e:
+                print(e)
+        with open(self.full_path, 'w') as file:
+            print("Chart.yaml: " + self.module_name)
+            file.write(file_text)
 
 
 class ValuesYaml(object):
@@ -254,8 +326,8 @@ class ValuesYaml(object):
     def has_active_nodeSelector(self):
         with open(self.full_path) as file:
             try:
-                obj_values_not_has_key_nodeSelector = yaml.safe_load(file)
-                if Util.has_key_recursion(obj_values_not_has_key_nodeSelector, 'nodeSelector') is None:
+                obj_values = yaml.safe_load(file)
+                if Util.has_key_recursion(obj_values, 'nodeSelector') is None:
                     return False
                 else:
                     return True
@@ -273,19 +345,6 @@ class ValuesYaml(object):
             except Exception as e:
                 print(e)
 
-    def correct_commentout_nodeSelector(self):
-        file_text = ''
-        with open(self.full_path) as file:
-            try:
-                file_text = file.read()
-                file_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
-            except Exception as e:
-                print(e)
-        if file_text != '':
-            with open(self.full_path, 'w') as file:
-                print("Modify: " + self.module_name)
-                file.write(file_text)
-
     def has_expected_structure_for_imagetag(self):
         with open(self.full_path) as file:
             values_yaml_obj = yaml.safe_load(file)
@@ -295,6 +354,55 @@ class ValuesYaml(object):
                     return False
                 else:
                     return True
+
+    def correct_commentout_nodeSelector(self):
+        file_text = ''
+        with open(self.full_path) as file:
+            try:
+                file_text = file.read()
+                file_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
+            except Exception as e:
+                print(e)
+        with open(self.full_path, 'w') as file:
+            print("Modify: " + self.module_name)
+            file.write(file_text)
+
+    def specify_nodeSelector_for_rdbox(self):
+        file_text = ""
+        nodeselector_text = ""
+        with open(self.full_path) as file:
+            try:
+                obj_values = yaml.safe_load(file)
+                obj_nodeselector = Util.has_key_recursion(obj_values, 'nodeSelector')
+                if obj_nodeselector is not None:
+                    obj_nodeselector.setdefault('beta.kubernetes.io/arch', 'amd64')
+                    obj_nodeselector.setdefault('beta.kubernetes.io/os', 'linux')
+                obj_nodeselector = {'nodeSelector': obj_nodeselector}
+                nodeselector_text = yaml.dump(obj_nodeselector)
+                file.seek(0)
+                flg_find_nodeSelector = False
+                indet_nodeSelector = 0
+                for index, line in enumerate(file.readlines()):
+                    if re.match(r'^\s*nodeSelector:', line):
+                        indet_nodeSelector = len(line.split('nodeSelector')[0])
+                        flg_find_nodeSelector = True
+                    else:
+                        if flg_find_nodeSelector:
+                            if line == '\n' or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
+                                for text in nodeselector_text.split('\n'):
+                                    if text != '':
+                                        file_text = file_text + ' ' * indet_nodeSelector + text + '\n'
+                                file_text = file_text + line
+                                flg_find_nodeSelector = False
+                            else:
+                                continue
+                        else:
+                            file_text += line
+            except Exception as e:
+                print(e)
+        with open(self.full_path, 'w') as file:
+            print("Specifiy: " + self.module_name)
+            file.write(file_text)
 
 
 class ReadmeMd(object):
@@ -315,6 +423,57 @@ class ReadmeMd(object):
                     print(e)
         except FileNotFoundError:
             return False
+
+    def is_contain_tldr_string(self):
+        try:
+            with open(self.full_path) as file:
+                try:
+                    l_XXX_i = [i for i, line in enumerate(file.readlines()) if 'TL;DR;' in line]
+                    if len(l_XXX_i) > 0:
+                        return True
+                    return False
+                except Exception as e:
+                    print(e)
+        except FileNotFoundError:
+            return False
+
+    def get_install_command(self):
+        file_text = ""
+        flg_find_nodeSelector = False
+        with open(self.full_path) as file:
+            try:
+                for index, line in enumerate(file.readlines()):
+                    if re.match(r'^#*\sTL;DR', line):
+                        flg_find_nodeSelector = True
+                    else:
+                        if flg_find_nodeSelector:
+                            if re.match(r'^##', line):
+                                break
+                            else:
+                                file_text += line
+                latest_helm_install_command = [line for line in file_text.split('\n') if 'helm install' in line][-1]
+                latest_helm_install_command = latest_helm_install_command.replace('$ ', '').strip()
+                return latest_helm_install_command
+            except Exception as e:
+                print(e)
+
+    def extract_set_options_from_install_command(self):
+        cmd_str = self.get_install_command()
+        _list_of_cmd = cmd_str.split(' ')
+        l_XXX_i = [i for i, line in enumerate(_list_of_cmd) if '--set' in line]
+        if len(l_XXX_i) > 0:
+            set_list = []
+            for index in l_XXX_i:
+                set_list.append(_list_of_cmd[index + 1])
+            return set_list
+        else:
+            return []
+
+
+class Templates(object):
+    def __init__(self, module_dir_path, module_name):
+        self.module_name = module_name
+        self.templates_dir_path = os.path.join(module_dir_path, 'templates')
 
 
 class RequirementsYaml(object):
@@ -390,7 +549,15 @@ class RequirementObject(object):
 
 
 if __name__ == '__main__':
-    collector = Collector()
-    collect_result = collector.work()
-    print(collect_result)
-    print(len(collect_result.get_all_HelmModule_mapped_by_module_name()))
+    repo = GithubRepos('https://github.com/bitnami/charts', 'bitnami')
+    collector = Collector(repo)
+    isolations_collect_result, dependons_collect_result = collector.work()
+    print('---')
+    converter = Converter(isolations_collect_result)
+    converter.work()
+    # collect_result = ChartInSpecificDir(repo)
+    # collect_result.merge(isolations_collect_result)
+    # collect_result.merge(dependons_collect_result)
+    # print('---')
+    # converter = Converter(collect_result)
+    # converter.work()
