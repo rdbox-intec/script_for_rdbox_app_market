@@ -3,6 +3,7 @@ import os
 import shutil
 import yaml
 import re
+import subprocess
 from git import Repo
 
 
@@ -18,6 +19,62 @@ class Util(object):
                     return item
 
 
+class HelmCommand(object):
+    def __init__(self):
+        import platform
+        pf = platform.system()
+        if pf == 'Darwin':
+            # By Brew
+            self.helm = os.path.join('/usr', 'local', 'bin', 'helm')
+        elif pf == 'Linux':
+            # By Snap
+            self.helm = os.path.join('/snap', 'bin', 'helm')
+        else:
+            # Setuped PATH
+            self.helm = 'helm'
+
+    def template(self, specific_dir_path, module_name, set_list=[]):
+        cmd_list = []
+        module_dir_path = os.path.join(specific_dir_path, module_name)
+        cmd_list.append(self.helm)
+        cmd_list.append('template')
+        cmd_list.append(module_dir_path)
+        if len(set_list) > 0:
+            set_str = ''
+            for set_item in set_list:
+                set_str = set_str + '--set' + ' ' + set_item.replace('[', '\[').replace(']', '\]') + '=DUMMY' + ' '
+            cmd_list.append(set_str)
+        cmd_list = ' '.join(cmd_list)
+        if os.path.isdir(os.path.join(module_dir_path, 'templates', 'tests')):
+            shutil.move(os.path.join(module_dir_path, 'templates', 'tests'), os.path.join(module_dir_path, '_tests'))
+            ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=True)
+            shutil.move(os.path.join(module_dir_path, '_tests'), os.path.join(module_dir_path, 'templates', 'tests'))
+        else:
+            ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=True)
+        chart_map = {}
+        for chart in ret.stdout.split('---'):
+            if chart.startswith('\n#'):
+                chart_lines = chart.split('\n')
+                filename = chart_lines[1].split(' ')[2]
+                body = yaml.safe_load('\n'.join(chart_lines[2:]))
+                chart_map.setdefault(filename, body)
+        return chart_map
+
+    def package(self, specific_dir_path, module_name):
+        path_of_generation_result = ''
+        cmd_list = []
+        module_dir_path = os.path.join(specific_dir_path, module_name)
+        cmd_list.append(self.helm)
+        cmd_list.append('package')
+        cmd_list.append(module_dir_path)
+        cmd_list.append('--destination')
+        cmd_list.append(specific_dir_path)
+        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if ret.returncode == 0:
+            path_of_generation_result = ret.stdout.split('it to: ')[-1].strip()
+        return path_of_generation_result
+
+
 class Collector(object):
     def __init__(self, repo):
         self.repo = repo
@@ -29,25 +86,30 @@ class Collector(object):
 
 
 class Converter(object):
-    def __init__(self, instance_of_ChartInSpecificDir):
-        self.collect_result = instance_of_ChartInSpecificDir
+    def __init__(self, isolations_instance_of_ChartInSpecificDir, dependons_instance_of_ChartInSpecificDir):
+        self.isolations_instance_of_ChartInSpecificDir = isolations_instance_of_ChartInSpecificDir
+        self.dependons_instance_of_ChartInSpecificDir = dependons_instance_of_ChartInSpecificDir
 
     def work(self):
-        self.collect_result.convert()
+        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert()
+        self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
+        # self.dependons_instance_of_ChartInSpecificDir.convert()
+        return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
 
 
 class GithubRepos(object):
 
-    DIR = os.path.join('/tmp', '.original.charts')
+    TOP_DIR = os.path.join('/tmp', '.original.charts')
+    REPOS_DIR = os.path.join(TOP_DIR, 'src')
     BRANCH = 'master'
 
     def __init__(self, url, specific_dir_from_top='', check_tldr=True):
         self.url = url
         self.specific_dir_from_top = specific_dir_from_top
-        self.repo_dir = os.path.join(self.DIR, self.get_account_name(), self.get_repository_name())
+        self.repo_dir = os.path.join(self.REPOS_DIR, self.get_account_name(), self.get_repository_name())
         self.check_tldr = check_tldr
         try:
-            shutil.rmtree(self.DIR)
+            shutil.rmtree(self.TOP_DIR)
         except FileNotFoundError:
             os.makedirs(self.repo_dir, exist_ok=True)
         self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.BRANCH, depth=1)
@@ -82,6 +144,7 @@ class ChartInSpecificDir(object):
         self.repo = repo
         self.specific_dirpath = self.repo.get_dirpath_with_prefix()
         self.all_HelmModule_mapped_by_module_name = {}
+        self.all_packaged_tgz_path_mapped_by_module_name = {}
 
     def __repr__(self):
         return str(self.get_all_HelmModule_mapped_by_module_name())
@@ -91,6 +154,9 @@ class ChartInSpecificDir(object):
 
     def get_all_HelmModule_mapped_by_module_name(self):
         return self.all_HelmModule_mapped_by_module_name
+
+    def get_all_packaged_tgz_path_mapped_by_module_name(self):
+        return self.all_packaged_tgz_path_mapped_by_module_name
 
     def update(self, all_RequirementsYaml_mapped_by_module_name):
         self.all_HelmModule_mapped_by_module_name.update(all_RequirementsYaml_mapped_by_module_name)
@@ -113,11 +179,41 @@ class ChartInSpecificDir(object):
         return isolations_collect_result, dependons_collect_result
 
     def convert(self):
+        invalid_key_list = []
+        helm_command = HelmCommand()
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             if not ('bitnami' in self.repo.get_url() and module_name == 'common'):
                 helm_module.specify_nodeSelector_for_rdbox()
                 helm_module.change_for_rdbox()
-                helm_module.extract_set_options_from_install_command()
+                manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
+                if not self._verify_manifest_map(manifest_map):
+                    invalid_key_list.append(module_name)
+                    continue
+                path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name)
+                if path_of_generation_result != '':
+                    self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
+                else:
+                    invalid_key_list.append(module_name)
+        self.remove_by_key_list(invalid_key_list)
+        return invalid_key_list
+
+    def _verify_manifest_map(self, manifest_map):
+        flg = True
+        for filename, manifest in manifest_map.items():
+            if manifest.get('kind') in ['Pod', 'Deployment', 'Job', 'DaemonSet', 'ReplicaSet', 'StatefulSet']:
+                node_selector = Util.has_key_recursion(manifest, 'nodeSelector')
+                if node_selector is None:
+                    if 'test' in filename:
+                        flg = True
+                    else:
+                        flg = False
+                        print(manifest)
+                        break
+                else:
+                    flg = True
+            else:
+                continue
+        return flg
 
     def remove_by_key_list(self, key_list):
         for key in list(set(key_list)):
@@ -401,7 +497,7 @@ class ValuesYaml(object):
             except Exception as e:
                 print(e)
         with open(self.full_path, 'w') as file:
-            print("Specifiy: " + self.module_name)
+            print("values.yaml: " + self.module_name)
             file.write(file_text)
 
 
@@ -464,7 +560,7 @@ class ReadmeMd(object):
         if len(l_XXX_i) > 0:
             set_list = []
             for index in l_XXX_i:
-                set_list.append(_list_of_cmd[index + 1])
+                set_list.append(_list_of_cmd[index + 1].split('=')[0])
             return set_list
         else:
             return []
@@ -549,11 +645,11 @@ class RequirementObject(object):
 
 
 if __name__ == '__main__':
-    repo = GithubRepos('https://github.com/bitnami/charts', 'bitnami')
+    repo = GithubRepos('https://github.com/bitnami/charts', 'bitnami', True)
     collector = Collector(repo)
     isolations_collect_result, dependons_collect_result = collector.work()
     print('---')
-    converter = Converter(isolations_collect_result)
+    converter = Converter(isolations_collect_result, dependons_collect_result)
     converter.work()
     # collect_result = ChartInSpecificDir(repo)
     # collect_result.merge(isolations_collect_result)
