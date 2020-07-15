@@ -91,13 +91,14 @@ class Converter(object):
         self.dependons_instance_of_ChartInSpecificDir = dependons_instance_of_ChartInSpecificDir
 
     def work(self):
-        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert()
+        rdbox_gh_repo = RdboxGhpagesGithubRepos('https://github.com/rdbox-intec/rdbox_app_market')
+        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert(rdbox_gh_repo)
         self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
         # self.dependons_instance_of_ChartInSpecificDir.convert()
         return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
 
 
-class GithubRepos(object):
+class ReferenceGithubRepos(object):
 
     TOP_DIR = os.path.join('/tmp', '.original.charts')
     REPOS_DIR = os.path.join(TOP_DIR, 'src')
@@ -137,6 +138,52 @@ class GithubRepos(object):
 
     def get_check_tldr(self):
         return self.check_tldr
+
+
+class RdboxMasterGithubRepos(object):
+
+    TOP_DIR = os.path.join('/tmp', '.original.charts')
+    REPOS_DIR = os.path.join(TOP_DIR, 'rdbox', 'master')
+    BRANCH = 'master'
+
+    def __init__(self, url, specific_dir_from_top=''):
+        self.url = url
+        self.specific_dir_from_top = specific_dir_from_top
+        self.repo_dir = os.path.join(self.REPOS_DIR)
+        os.makedirs(self.repo_dir, exist_ok=True)
+        self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.BRANCH, depth=1)
+
+    def get_dirpath(self):
+        return self.repo_dir
+
+    def get_url(self):
+        return self.url
+
+    def get_specific_dir_from_top(self):
+        return self.specific_dir_from_top
+
+
+class RdboxGhpagesGithubRepos(object):
+
+    TOP_DIR = os.path.join('/tmp', '.original.charts')
+    REPOS_DIR = os.path.join(TOP_DIR, 'rdbox', 'gh-pages')
+    BRANCH = 'gh-pages'
+
+    def __init__(self, url, specific_dir_from_top=''):
+        self.url = url
+        self.specific_dir_from_top = specific_dir_from_top
+        self.repo_dir = os.path.join(self.REPOS_DIR)
+        os.makedirs(self.repo_dir, exist_ok=True)
+        self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.BRANCH, depth=1)
+
+    def get_dirpath(self):
+        return self.repo_dir
+
+    def get_url(self):
+        return self.url
+
+    def get_specific_dir_from_top(self):
+        return self.specific_dir_from_top
 
 
 class ChartInSpecificDir(object):
@@ -645,7 +692,7 @@ class RequirementObject(object):
 
 
 if __name__ == '__main__':
-    repo = GithubRepos('https://github.com/bitnami/charts', 'bitnami', True)
+    repo = ReferenceGithubRepos('https://github.com/bitnami/charts', 'bitnami', True)
     collector = Collector(repo)
     isolations_collect_result, dependons_collect_result = collector.work()
     print('---')
