@@ -3,79 +3,17 @@ import os
 import shutil
 import yaml
 import re
-import subprocess
 from git import Repo
 
-
-class Util(object):
-    @classmethod
-    def has_key_recursion(cls, obj, key):
-        if key in obj:
-            return obj[key]
-        for k, v in obj.items():
-            if isinstance(v, dict):
-                item = cls.has_key_recursion(v, key)
-                if item is not None:
-                    return item
-
-
-class HelmCommand(object):
-    def __init__(self):
-        import platform
-        pf = platform.system()
-        if pf == 'Darwin':
-            # By Brew
-            self.helm = os.path.join('/usr', 'local', 'bin', 'helm')
-        elif pf == 'Linux':
-            # By Snap
-            self.helm = os.path.join('/snap', 'bin', 'helm')
-        else:
-            # Setuped PATH
-            self.helm = 'helm'
-
-    def template(self, specific_dir_path, module_name, set_list=[]):
-        cmd_list = []
-        module_dir_path = os.path.join(specific_dir_path, module_name)
-        cmd_list.append(self.helm)
-        cmd_list.append('template')
-        cmd_list.append(module_dir_path)
-        if len(set_list) > 0:
-            set_str = ''
-            for set_item in set_list:
-                set_str = set_str + '--set' + ' ' + set_item.replace('[', '\[').replace(']', '\]') + '=DUMMY' + ' '
-            cmd_list.append(set_str)
-        cmd_list = ' '.join(cmd_list)
-        if os.path.isdir(os.path.join(module_dir_path, 'templates', 'tests')):
-            shutil.move(os.path.join(module_dir_path, 'templates', 'tests'), os.path.join(module_dir_path, '_tests'))
-            ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=True)
-            shutil.move(os.path.join(module_dir_path, '_tests'), os.path.join(module_dir_path, 'templates', 'tests'))
-        else:
-            ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=True)
-        chart_map = {}
-        for chart in ret.stdout.split('---'):
-            if chart.startswith('\n#'):
-                chart_lines = chart.split('\n')
-                filename = chart_lines[1].split(' ')[2]
-                body = yaml.safe_load('\n'.join(chart_lines[2:]))
-                chart_map.setdefault(filename, body)
-        return chart_map
-
-    def package(self, specific_dir_path, module_name):
-        path_of_generation_result = ''
-        cmd_list = []
-        module_dir_path = os.path.join(specific_dir_path, module_name)
-        cmd_list.append(self.helm)
-        cmd_list.append('package')
-        cmd_list.append(module_dir_path)
-        cmd_list.append('--destination')
-        cmd_list.append(specific_dir_path)
-        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        if ret.returncode == 0:
-            path_of_generation_result = ret.stdout.split('it to: ')[-1].strip()
-        return path_of_generation_result
+from rdbox_app_market.util import Util
+from rdbox_app_market.helm import HelmCommand
 
 
 class Collector(object):
+    '''
+    This instance will collect Helm Charts from the specified GitHub repository.
+    Also, if the format is not specified, the Chart will be excluded.
+    '''
     def __init__(self, repo):
         self.repo = repo
 
@@ -85,14 +23,19 @@ class Collector(object):
         return isolations_collect_result, dependons_collect_result
 
 
-class Converter(object):
+class Publisher(object):
+    '''
+    The Instance is to arrange the converting and publish of helm chart.
+    like a publishing company.
+    '''
     def __init__(self, isolations_instance_of_ChartInSpecificDir, dependons_instance_of_ChartInSpecificDir):
         self.isolations_instance_of_ChartInSpecificDir = isolations_instance_of_ChartInSpecificDir
         self.dependons_instance_of_ChartInSpecificDir = dependons_instance_of_ChartInSpecificDir
 
     def work(self):
+        rdbox_master_repo = RdboxGhpagesGithubRepos('https://github.com/rdbox-intec/rdbox_app_market')
         rdbox_gh_repo = RdboxGhpagesGithubRepos('https://github.com/rdbox-intec/rdbox_app_market')
-        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert(rdbox_gh_repo)
+        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert()
         self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
         # self.dependons_instance_of_ChartInSpecificDir.convert()
         return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
@@ -689,18 +632,3 @@ class RequirementObject(object):
 
     def get_tags(self):
         return self.tags
-
-
-if __name__ == '__main__':
-    repo = ReferenceGithubRepos('https://github.com/bitnami/charts', 'bitnami', True)
-    collector = Collector(repo)
-    isolations_collect_result, dependons_collect_result = collector.work()
-    print('---')
-    converter = Converter(isolations_collect_result, dependons_collect_result)
-    converter.work()
-    # collect_result = ChartInSpecificDir(repo)
-    # collect_result.merge(isolations_collect_result)
-    # collect_result.merge(dependons_collect_result)
-    # print('---')
-    # converter = Converter(collect_result)
-    # converter.work()
