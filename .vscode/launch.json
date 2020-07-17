@@ -1,0 +1,11 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python All",
+      "type": "python",
+      "request": "launch",
+      "module": "rdbox_app_market"
+    }
+  ]
+}

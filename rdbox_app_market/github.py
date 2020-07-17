@@ -9,38 +9,6 @@ from rdbox_app_market.util import Util
 from rdbox_app_market.helm import HelmCommand
 
 
-class Collector(object):
-    '''
-    This instance will collect Helm Charts from the specified GitHub repository.
-    Also, if the format is not specified, the Chart will be excluded.
-    '''
-    def __init__(self, repo):
-        self.repo = repo
-
-    def work(self):
-        chart_in_specific_dir = ChartInSpecificDir(self.repo)
-        isolations_collect_result, dependons_collect_result = chart_in_specific_dir.analyze()
-        return isolations_collect_result, dependons_collect_result
-
-
-class Publisher(object):
-    '''
-    The Instance is to arrange the converting and publish of helm chart.
-    like a publishing company.
-    '''
-    def __init__(self, isolations_instance_of_ChartInSpecificDir, dependons_instance_of_ChartInSpecificDir):
-        self.isolations_instance_of_ChartInSpecificDir = isolations_instance_of_ChartInSpecificDir
-        self.dependons_instance_of_ChartInSpecificDir = dependons_instance_of_ChartInSpecificDir
-
-    def work(self):
-        rdbox_master_repo = RdboxGhpagesGithubRepos('https://github.com/rdbox-intec/rdbox_app_market')
-        rdbox_gh_repo = RdboxGhpagesGithubRepos('https://github.com/rdbox-intec/rdbox_app_market')
-        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert()
-        self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
-        # self.dependons_instance_of_ChartInSpecificDir.convert()
-        return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
-
-
 class ReferenceGithubRepos(object):
 
     TOP_DIR = os.path.join('/tmp', '.original.charts')
@@ -93,11 +61,20 @@ class RdboxMasterGithubRepos(object):
         self.url = url
         self.specific_dir_from_top = specific_dir_from_top
         self.repo_dir = os.path.join(self.REPOS_DIR)
-        os.makedirs(self.repo_dir, exist_ok=True)
+        try:
+            shutil.rmtree(self.repo_dir)
+        except FileNotFoundError:
+            os.makedirs(self.repo_dir, exist_ok=True)
         self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.BRANCH, depth=1)
 
     def get_dirpath(self):
         return self.repo_dir
+
+    def get_dirpath_with_prefix(self):
+        if self.specific_dir_from_top == '':
+            return self.get_dirpath()
+        else:
+            return os.path.join(self.get_dirpath(), self.get_specific_dir_from_top())
 
     def get_url(self):
         return self.url
@@ -116,11 +93,20 @@ class RdboxGhpagesGithubRepos(object):
         self.url = url
         self.specific_dir_from_top = specific_dir_from_top
         self.repo_dir = os.path.join(self.REPOS_DIR)
-        os.makedirs(self.repo_dir, exist_ok=True)
+        try:
+            shutil.rmtree(self.repo_dir)
+        except FileNotFoundError:
+            os.makedirs(self.repo_dir, exist_ok=True)
         self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.BRANCH, depth=1)
 
     def get_dirpath(self):
         return self.repo_dir
+
+    def get_dirpath_with_prefix(self):
+        if self.specific_dir_from_top == '':
+            return self.get_dirpath()
+        else:
+            return os.path.join(self.get_dirpath(), self.get_specific_dir_from_top())
 
     def get_url(self):
         return self.url
@@ -128,16 +114,82 @@ class RdboxGhpagesGithubRepos(object):
     def get_specific_dir_from_top(self):
         return self.specific_dir_from_top
 
+    def commit(self):
+        self.repo.git.add(self.get_dirpath())
+        self.repo.index.commit('Automatic execution by robots.')
 
-class ChartInSpecificDir(object):
+    def push(self):
+        origin = self.repo.remote(name='origin')
+        origin.push()
+
+
+class Collector(object):
+    """
+    This instance will collect Helm Charts from the specified GitHub repository.
+    Also, if the format is not specified, the Chart will be excluded.
+    """
     def __init__(self, repo):
         self.repo = repo
+
+    def work(self):
+        chart_in_specific_dir = ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_OTHERS)
+        isolations_collect_result, dependons_collect_result = chart_in_specific_dir.analyze()
+        return isolations_collect_result, dependons_collect_result
+
+
+class Publisher(object):
+    """
+    The Instance is to arrange the converting and publish of helm chart.
+    like a publishing company.
+    """
+    def __init__(self, isolations_instance_of_ChartInSpecificDir, dependons_instance_of_ChartInSpecificDir):
+        self.isolations_instance_of_ChartInSpecificDir = isolations_instance_of_ChartInSpecificDir
+        self.dependons_instance_of_ChartInSpecificDir = dependons_instance_of_ChartInSpecificDir
+
+    def work(self):
+        rdbox_gh_repo = RdboxGhpagesGithubRepos('git@github.com:rdbox-intec/rdbox_app_market.git', 'rdbox')
+        rdbox_master_repo = RdboxMasterGithubRepos('git@github.com:rdbox-intec/rdbox_app_market.git', 'rdbox')
+        #
+        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert_and_publish(rdbox_gh_repo)
+        self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
+        # self.dependons_instance_of_ChartInSpecificDir.convert()
+        return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
+
+
+class ChartInSpecificDirConverError(Exception):
+    pass
+
+
+class ChartInSpecificDir(object):
+
+    ANNOTATION_OTHERS = 'others'
+    ANNOTATION_ISOLATIONS = 'isolations'
+    ANNOTATION_DEPENDONS = 'dependons'
+
+    def __init__(self, repo, annotation=ANNOTATION_OTHERS):
+        """Constructor
+
+        Args:
+            repo (ReferenceGithubRepos): GitHub repositories to reference.
+            annotation (str, optional): The classification of the data held by GitHub repositories when it is classified.
+        """
+        self.repo = repo
+        if annotation == ChartInSpecificDir.ANNOTATION_OTHERS or \
+            annotation == ChartInSpecificDir.ANNOTATION_ISOLATIONS or \
+                annotation == ChartInSpecificDir.ANNOTATION_DEPENDONS:
+            self.annotation = annotation
+        else:
+            print(annotation)
+            raise
         self.specific_dirpath = self.repo.get_dirpath_with_prefix()
         self.all_HelmModule_mapped_by_module_name = {}
         self.all_packaged_tgz_path_mapped_by_module_name = {}
 
     def __repr__(self):
         return str(self.get_all_HelmModule_mapped_by_module_name())
+
+    def get_annotation(self):
+        return self.annotation
 
     def get_specific_dirpath(self):
         return self.specific_dirpath
@@ -168,24 +220,58 @@ class ChartInSpecificDir(object):
         ###
         return isolations_collect_result, dependons_collect_result
 
-    def convert(self):
+    def convert_and_publish(self, repo_for_rdbox):
         invalid_key_list = []
-        helm_command = HelmCommand()
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
-            if not ('bitnami' in self.repo.get_url() and module_name == 'common'):
-                helm_module.specify_nodeSelector_for_rdbox()
-                helm_module.change_for_rdbox()
-                manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
-                if not self._verify_manifest_map(manifest_map):
-                    invalid_key_list.append(module_name)
-                    continue
-                path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name)
-                if path_of_generation_result != '':
-                    self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
-                else:
-                    invalid_key_list.append(module_name)
+            # ToDo
+            # ----- Filter ---------
+            if 'bitnami' in self.repo.get_url() and module_name == 'common':
+                continue
+            # ----------------------
+            try:
+                if self.get_annotation() == ChartInSpecificDir.ANNOTATION_ISOLATIONS:
+                    self._convert_isolations(repo_for_rdbox, module_name, helm_module)
+                elif self.get_annotation() == ChartInSpecificDir.ANNOTATION_DEPENDONS:
+                    self._convert_dependons(repo_for_rdbox, module_name, helm_module)
+            except ChartInSpecificDirConverError:
+                invalid_key_list.append(module_name)
+            except Exception as e:
+                print(e)
+                invalid_key_list.append(module_name)
         self.remove_by_key_list(invalid_key_list)
+        self._pack(repo_for_rdbox)
+        self._publish(repo_for_rdbox)
         return invalid_key_list
+
+    def _pack(self, repo_for_rdbox):
+        helm_command = HelmCommand()
+        path_of_generation_result = helm_command.repo_index(self.get_specific_dirpath())
+        target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.move(path_of_generation_result, target)
+        for module_name, path in self.get_all_packaged_tgz_path_mapped_by_module_name().items():
+            target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path))
+            shutil.move(path, target)
+        repo_for_rdbox.commit()
+
+    def _publish(self, repo_for_rdbox):
+        repo_for_rdbox.push()
+
+    def _convert_isolations(self, repo_for_rdbox, module_name, helm_module):
+        helm_command = HelmCommand()
+        helm_module.specify_nodeSelector_for_rdbox()
+        helm_module.change_for_rdbox()
+        manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
+        if not self._verify_manifest_map(manifest_map):
+            ChartInSpecificDirConverError()
+        path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
+        if path_of_generation_result != '':
+            self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
+        else:
+            ChartInSpecificDirConverError()
+
+    def _convert_dependons(self, repo_for_rdbox, module_name, helm_module):
+        pass
 
     def _verify_manifest_map(self, manifest_map):
         flg = True
@@ -222,27 +308,28 @@ class ChartInSpecificDir(object):
 
     def excludes_unknown_dependencies(self):
         isolations = {}
-        dependon = {}
+        dependons = {}
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             if helm_module.get_full_path_to_requirements_yaml() is None:
                 isolations.setdefault(module_name, helm_module)
             else:
-                dependon.setdefault(module_name, helm_module)
+                dependons.setdefault(module_name, helm_module)
         candidate = []
-        for module_name, helm_module in dependon.items():
+        for module_name, helm_module in dependons.items():
             for req_obj in helm_module.get_RequirementObject_list():
                 candidate.append(req_obj.name)
         candidate = list(set(candidate))
         del_keys = []
         for candidate_module_name in candidate:
-            if (candidate_module_name not in isolations) and (candidate_module_name not in dependon):
-                for module_name, helm_module in dependon.items():
+            if (candidate_module_name not in isolations) and (candidate_module_name not in dependons):
+                for module_name, helm_module in dependons.items():
                     if helm_module.has_module_of_dependencies(candidate_module_name):
                         del_keys.append(module_name)
         for key in list(set(del_keys)):
             print('Delete: ' + key)
-            dependon.pop(key)
-        return ChartInSpecificDir(self.repo).update(isolations), ChartInSpecificDir(self.repo).update(dependon)
+            dependons.pop(key)
+        return (ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_ISOLATIONS).update(isolations),
+                ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_DEPENDONS).update(dependons))
 
     def get_invalid_key_list(self):
         invalid_keys = []

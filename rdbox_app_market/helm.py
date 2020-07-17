@@ -6,6 +6,12 @@ import subprocess
 
 
 class HelmCommand(object):
+    """Wrapped HELM command used by rdbox_app_market.
+
+    Attributes:
+        helm (str): Full path of platform-specific helm commands.
+    """
+
     def __init__(self):
         import platform
         pf = platform.system()
@@ -46,7 +52,7 @@ class HelmCommand(object):
                 chart_map.setdefault(filename, body)
         return chart_map
 
-    def package(self, specific_dir_path, module_name):
+    def package(self, specific_dir_path, module_name, dest_dir_path):
         path_of_generation_result = ''
         cmd_list = []
         module_dir_path = os.path.join(specific_dir_path, module_name)
@@ -54,8 +60,20 @@ class HelmCommand(object):
         cmd_list.append('package')
         cmd_list.append(module_dir_path)
         cmd_list.append('--destination')
-        cmd_list.append(specific_dir_path)
+        cmd_list.append(dest_dir_path)
         ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         if ret.returncode == 0:
             path_of_generation_result = ret.stdout.split('it to: ')[-1].strip()
+        return path_of_generation_result
+
+    def repo_index(self, specific_dir_path):
+        path_of_generation_result = ''
+        cmd_list = []
+        cmd_list.append(self.helm)
+        cmd_list.append('repo')
+        cmd_list.append('index')
+        cmd_list.append(specific_dir_path)
+        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if ret.returncode == 0:
+            path_of_generation_result = os.path.join(specific_dir_path, 'index.yaml')
         return path_of_generation_result
