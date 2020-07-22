@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import os
 import shutil
-from git import exc
 import yaml
 import re
+import urllib.request
 
 from rdbox_app_market.util import Util
 from rdbox_app_market.helm import HelmCommand
@@ -57,7 +57,7 @@ class Publisher(object):
             priority=999)
         invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert_and_publish(rdbox_gh_repo)
         self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
-        # self.dependons_instance_of_ChartInSpecificDir.convert()
+        invalid_key_list = self.dependons_instance_of_ChartInSpecificDir.convert_and_publish(rdbox_gh_repo)
         return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
 
 
@@ -167,17 +167,6 @@ class ChartInSpecificDir(object):
         # self._publish(repo_for_rdbox)
         return invalid_key_list
 
-    def _pack(self, repo_for_rdbox):
-        helm_command = HelmCommand()
-        path_of_generation_result = helm_command.repo_index(self.get_specific_dirpath())
-        target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        shutil.move(path_of_generation_result, target)
-        for module_name, path in self.get_all_packaged_tgz_path_mapped_by_module_name().items():
-            target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path))
-            shutil.move(path, target)
-        repo_for_rdbox.commit()
-
     def _convert(self, repo_for_rdbox, module_name, helm_module):
         invalid_key_list = []
         # ToDo
@@ -200,7 +189,9 @@ class ChartInSpecificDir(object):
 
     def _convert_isolations(self, repo_for_rdbox, module_name, helm_module):
         helm_module.specify_nodeSelector_for_rdbox()
-        helm_module.change_for_rdbox()
+        dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
+        os.makedirs(dir_to_save_icon, exist_ok=True)
+        helm_module.customize_chartyaml_for_rdbox(dir_to_save_icon)
         helm_command = HelmCommand()
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
         if not self._verify_manifest_map(manifest_map):
@@ -213,7 +204,23 @@ class ChartInSpecificDir(object):
         print("Convert(ISOLATIONS): " + module_name)
 
     def _convert_dependons(self, repo_for_rdbox, module_name, helm_module):
-        pass
+        helm_module.specify_nodeSelector_for_rdbox()
+        dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
+        os.makedirs(dir_to_save_icon, exist_ok=True)
+        helm_module.customize_chartyaml_for_rdbox(dir_to_save_icon)
+        helm_command = HelmCommand()
+        print("Convert(DEPENDONS): " + module_name)
+
+    def _pack(self, repo_for_rdbox):
+        helm_command = HelmCommand()
+        path_of_generation_result = helm_command.repo_index(self.get_specific_dirpath())
+        target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.move(path_of_generation_result, target)
+        for module_name, path in self.get_all_packaged_tgz_path_mapped_by_module_name().items():
+            target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path))
+            shutil.move(path, target)
+        repo_for_rdbox.commit()
 
     def _publish(self, repo_for_rdbox):
         repo_for_rdbox.push()
@@ -443,8 +450,8 @@ class HelmModule(object):
     def extract_set_options_from_install_command(self):
         return self.get_ReadmeMd().extract_set_options_from_install_command()
 
-    def change_for_rdbox(self):
-        return self.get_ChartYaml().change_for_rdbox()
+    def customize_chartyaml_for_rdbox(self, dir_to_save_icon):
+        return self.get_ChartYaml().customize_chartyaml_for_rdbox(dir_to_save_icon)
 
 
 class ChartYaml(object):
@@ -452,12 +459,24 @@ class ChartYaml(object):
         self.module_name = module_name
         self.full_path = os.path.join(module_dir_path, 'Chart.yaml')
 
-    def change_for_rdbox(self):
+    def customize_chartyaml_for_rdbox(self, dir_to_save_icon):
         file_text = ''
         with open(self.full_path) as file:
             try:
                 obj_values = yaml.safe_load(file)
                 obj_values['maintainers'] = [{'name': 'RDBOX Project', 'email': 'info-rdbox@intec.co.jp'}]
+                # collect icon image and change the url to RDBOX #
+                url = obj_values.get('icon', None)
+                if url is not None:
+                    original_file_name = url.split('/')[-1]
+                    _, original_file_ext = os.path.splitext(original_file_name)
+                    icon_filename = self.module_name + original_file_ext
+                    try:
+                        urllib.request.urlretrieve(url, os.path.join(dir_to_save_icon, icon_filename))
+                        obj_values['icon'] = 'https://raw.githubusercontent.com/rdbox-intec/rdbox_app_market/master/icons/' + icon_filename
+                    except Exception:
+                        pass
+                ##################################################
                 file_text = yaml.dump(obj_values)
             except Exception as e:
                 print(e)
@@ -591,7 +610,6 @@ class ReadmeMd(object):
                     print(e)
         except FileNotFoundError:
             return False
-
 
     def get_install_command(self):
         try:
