@@ -20,6 +20,5 @@ class MissionControl(object):
         # ----------------- #
         collector = Collector(repos)
         isolations_collect_result, dependons_collect_result = collector.work()
-        print('---')
-        converter = Publisher(isolations_collect_result, dependons_collect_result)
-        converter.work()
+        publisher = Publisher(isolations_collect_result, dependons_collect_result)
+        publisher.work()

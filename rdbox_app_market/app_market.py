@@ -16,6 +16,11 @@ class Collector(object):
     Also, if the format is not specified, the Chart will be excluded.
     """
     def __init__(self, reference_repos):
+        """ constructor
+
+        Args:
+            reference_repos (list[ReferenceGithubRepos]): List of Git repositories to reference when generating a Helm Chart for RDBOX
+        """
         self.reference_repos = reference_repos
         self.rdbox_master_repo = RdboxGithubRepos(
             'git@github.com:rdbox-intec/rdbox_app_market.git',
@@ -32,9 +37,7 @@ class Collector(object):
             chart_in_specific_dir.merge(now_processing_isolations)
             chart_in_specific_dir.merge(now_processing_dependons)
         chart_in_specific_dir.move_entity()
-        print('---')
         ################
-        # chart_in_specific_dir = ChartInSpecificDir(self.reference_repos, ChartInSpecificDir.ANNOTATION_OTHERS)
         isolations_collect_result, dependons_collect_result = chart_in_specific_dir.analyze()
         return isolations_collect_result, dependons_collect_result
 
@@ -44,9 +47,15 @@ class Publisher(object):
 
     like a publishing company.
     """
-    def __init__(self, isolations_instance_of_ChartInSpecificDir, dependons_instance_of_ChartInSpecificDir):
-        self.isolations_instance_of_ChartInSpecificDir = isolations_instance_of_ChartInSpecificDir
-        self.dependons_instance_of_ChartInSpecificDir = dependons_instance_of_ChartInSpecificDir
+    def __init__(self, isolations, dependons):
+        """ constructor
+
+        Args:
+            isolations (ChartInSpecificDir): Chart that is independent of other Charts.
+            dependons (ChartInSpecificDir): Chart that depend on other Charts.
+        """
+        self.isolations = isolations
+        self.dependons = dependons
 
     def work(self):
         rdbox_gh_repo = RdboxGithubRepos(
@@ -55,13 +64,18 @@ class Publisher(object):
             specific_dir_from_top='rdbox',
             check_tldr=False,
             priority=999)
-        invalid_key_list = self.isolations_instance_of_ChartInSpecificDir.convert_and_publish(rdbox_gh_repo)
-        self.dependons_instance_of_ChartInSpecificDir.remove_by_depend_modules_list(invalid_key_list)
-        invalid_key_list = self.dependons_instance_of_ChartInSpecificDir.convert_and_publish(rdbox_gh_repo)
-        return self.isolations_instance_of_ChartInSpecificDir, self.dependons_instance_of_ChartInSpecificDir
+        print('------------------- {url} ------------------'.format(url=rdbox_gh_repo.get_url()))
+        invalid_key_list = self.isolations.convert_and_publish(rdbox_gh_repo)
+        self.dependons.remove_by_depend_modules_list(invalid_key_list)
+        invalid_key_list = self.dependons.convert_and_publish(rdbox_gh_repo)
+        return self.isolations, self.dependons
 
 
 class ChartInSpecificDirConverError(Exception):
+    pass
+
+
+class ChartInSpecificDirPackError(Exception):
     pass
 
 
@@ -163,9 +177,16 @@ class ChartInSpecificDir(object):
         for module_name in invalid_key_list:
             print('Delete(MISS_CONVERT): ' + module_name)
         self.remove_by_key_list(invalid_key_list)
-        self._pack(repo_for_rdbox)
-        # self._publish(repo_for_rdbox)
-        return invalid_key_list
+        try:
+            self._pack(repo_for_rdbox)
+            # self._publish(repo_for_rdbox)
+        except ChartInSpecificDirPackError as e:
+            print("PackERR({msg})".find(str(e)))
+            invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
+        except Exception as e:
+            print(e)
+            invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
+        return list(set(invalid_key_list))
 
     def _convert(self, repo_for_rdbox, module_name, helm_module):
         invalid_key_list = []
@@ -179,11 +200,12 @@ class ChartInSpecificDir(object):
                 self._convert_isolations(repo_for_rdbox, module_name, helm_module)
             elif self.get_annotation() == ChartInSpecificDir.ANNOTATION_DEPENDONS:
                 self._convert_dependons(repo_for_rdbox, module_name, helm_module)
-        except ChartInSpecificDirConverError:
+        except ChartInSpecificDirConverError as e:
             invalid_key_list.append(module_name)
+            print("ConvertERR({msg}): {module_name}".find(str(e), module_name))
         except Exception as e:
-            print(e)
             invalid_key_list.append(module_name)
+            print("ConvertERR({msg}): {module_name}".find(str(e), module_name))
         finally:
             return invalid_key_list
 
@@ -195,12 +217,12 @@ class ChartInSpecificDir(object):
         helm_command = HelmCommand()
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
         if not self._verify_manifest_map(manifest_map):
-            raise ChartInSpecificDirConverError()
+            raise ChartInSpecificDirConverError('Contains workloads (Pods, Deployment, DaemonSet, etc.) for which nodeSelector is not specified.')
         path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
-        if path_of_generation_result != '':
+        if os.path.isfile(path_of_generation_result):
             self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
         else:
-            raise ChartInSpecificDirConverError()
+            raise ChartInSpecificDirConverError(path_of_generation_result)
         print("Convert(ISOLATIONS): " + module_name)
 
     def _convert_dependons(self, repo_for_rdbox, module_name, helm_module):
@@ -214,10 +236,13 @@ class ChartInSpecificDir(object):
     def _pack(self, repo_for_rdbox):
         helm_command = HelmCommand()
         path_of_generation_result = helm_command.repo_index(self.get_specific_dirpath())
-        target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        shutil.move(path_of_generation_result, target)
-        for module_name, path in self.get_all_packaged_tgz_path_mapped_by_module_name().items():
+        if os.path.isfile(path_of_generation_result):
+            target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.move(path_of_generation_result, target)
+        else:
+            raise ChartInSpecificDirPackError(path_of_generation_result)
+        for _, path in self.get_all_packaged_tgz_path_mapped_by_module_name().items():
             target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path))
             shutil.move(path, target)
         repo_for_rdbox.commit()
@@ -703,7 +728,7 @@ class RequirementsYaml(object):
 
 
 class RequirementObject(object):
-    def __init__(self, name, version, repository, condition, tags):
+    def __init__(self, name, version, repository, condition, tags=None):
         self.name = name
         self.version = version
         self.repository = repository

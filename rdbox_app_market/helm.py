@@ -61,9 +61,11 @@ class HelmCommand(object):
         cmd_list.append(module_dir_path)
         cmd_list.append('--destination')
         cmd_list.append(dest_dir_path)
-        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if ret.returncode == 0:
             path_of_generation_result = ret.stdout.split('it to: ')[-1].strip()
+        else:
+            path_of_generation_result = ret.stderr
         return path_of_generation_result
 
     def repo_index(self, specific_dir_path):
@@ -73,7 +75,9 @@ class HelmCommand(object):
         cmd_list.append('repo')
         cmd_list.append('index')
         cmd_list.append(specific_dir_path)
-        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if ret.returncode == 0:
             path_of_generation_result = os.path.join(specific_dir_path, 'index.yaml')
+        else:
+            path_of_generation_result = ret.stderr
         return path_of_generation_result
