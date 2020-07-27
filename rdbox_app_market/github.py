@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from http.client import InvalidURL
 import os
 import shutil
 import glob
@@ -21,14 +22,29 @@ class GithubRepos(object):
     def get_url(self):
         return self.url
 
+    def get_url_of_pages(self):
+        url = 'https://{account}.github.io/{repo_name}/{from_top}'.format(
+            account=self.get_account_name(),
+            repo_name=self.get_repository_name(),
+            from_top=self.get_specific_dir_from_top())
+        return url
+
     def get_specific_dir_from_top(self):
         return self.specific_dir_from_top
 
     def get_account_name(self):
-        return self.url.split('/')[3]
+        if self.url.startswith('https'):
+            return self.url.split('/')[3]
+        if self.url.startswith('git'):
+            base = self.url.split(':')[1]
+            return base.split('/')[0]
 
     def get_repository_name(self):
-        return self.url.split('/')[4]
+        if self.url.startswith('https'):
+            return self.url.split('/')[4].split('.')[0]
+        if self.url.startswith('git'):
+            base = self.url.split(':')[1]
+            return base.split('/')[1].split('.')[0]
 
     def get_check_tldr(self):
         return self.check_tldr
@@ -38,7 +54,7 @@ class GithubRepos(object):
 
     def commit(self):
         self.repo.git.add(self.get_dirpath())
-        self.repo.index.commit('Automatic execution by robots.')
+        self.repo.index.commit('Automatic execution by robots.', skip_hooks=True)
 
     def push(self):
         origin = self.repo.remote(name='origin')
@@ -63,6 +79,8 @@ class ReferenceGithubRepos(GithubRepos):
             check_tldr (bool, optional): Whether or not to verify the helm install command following "TL;DR title".. Defaults to False.
             priority (int, optional): Specifies the priority of multiple referenced Git repositories when they exist. The higher the number, the higher the priority. Defaults to 1.
         """
+        if not ((url.startswith('https') or url.startswith('git')) and url.endswith('.git')):
+            raise InvalidURL(url)
         self.url = url
         self.branch = branch
         self.specific_dir_from_top = specific_dir_from_top
@@ -94,6 +112,8 @@ class RdboxGithubRepos(GithubRepos):
             check_tldr (bool, optional): Whether or not to verify the helm install command following "TL;DR title".. Defaults to False.
             priority (int, optional): Specifies the priority of multiple referenced Git repositories when they exist. The higher the number, the higher the priority. Defaults to 1.
         """
+        if not ((url.startswith('https') or url.startswith('git')) and url.endswith('.git')):
+            raise InvalidURL(url)
         self.url = url
         self.branch = branch
         self.specific_dir_from_top = specific_dir_from_top

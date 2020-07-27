@@ -3,6 +3,7 @@ import os
 import shutil
 import yaml
 import re
+from pathlib import Path
 import urllib.request
 
 from rdbox_app_market.util import Util
@@ -65,10 +66,12 @@ class Publisher(object):
             check_tldr=False,
             priority=999)
         print('------------------- {url} ------------------'.format(url=rdbox_gh_repo.get_url()))
-        invalid_key_list = self.isolations.convert_and_publish(rdbox_gh_repo)
+        invalid_key_list = self.isolations.convert(rdbox_gh_repo)
         self.dependons.remove_by_depend_modules_list(invalid_key_list)
-        invalid_key_list = self.dependons.convert_and_publish(rdbox_gh_repo)
-        return self.isolations, self.dependons
+        invalid_key_list = self.dependons.convert(rdbox_gh_repo)
+        self.dependons.merge(self.isolations)
+        self.dependons.publish(rdbox_gh_repo)
+        return self.dependons
 
 
 class ChartInSpecificDirConverError(Exception):
@@ -140,10 +143,14 @@ class ChartInSpecificDir(object):
             if module_name in self.get_all_HelmModule_mapped_by_module_name():
                 if helm_module.get_priority() >= self.get_all_HelmModule_mapped_by_module_name()[module_name].get_priority():
                     self.get_all_HelmModule_mapped_by_module_name()[module_name] = helm_module
+                    if module_name in other.get_all_packaged_tgz_path_mapped_by_module_name():
+                        self.get_all_packaged_tgz_path_mapped_by_module_name().setdefault(module_name, other.get_all_packaged_tgz_path_mapped_by_module_name()[module_name])
                 else:
                     continue
             else:
                 self.get_all_HelmModule_mapped_by_module_name().setdefault(module_name, helm_module)
+                if module_name in other.get_all_packaged_tgz_path_mapped_by_module_name():
+                    self.get_all_packaged_tgz_path_mapped_by_module_name().setdefault(module_name, other.get_all_packaged_tgz_path_mapped_by_module_name()[module_name])
         return self
 
     def move_entity(self):
@@ -169,7 +176,7 @@ class ChartInSpecificDir(object):
         dependons_collect_result.remove_by_key_list(invalid_key_list)
         return isolations_collect_result, dependons_collect_result
 
-    def convert_and_publish(self, repo_for_rdbox):
+    def convert(self, repo_for_rdbox):
         invalid_key_list = []
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             _invalids = self._convert(repo_for_rdbox, module_name, helm_module)
@@ -177,6 +184,10 @@ class ChartInSpecificDir(object):
         for module_name in invalid_key_list:
             print('Delete(MISS_CONVERT): ' + module_name)
         self.remove_by_key_list(invalid_key_list)
+        return list(set(invalid_key_list))
+
+    def publish(self, repo_for_rdbox):
+        invalid_key_list = []
         try:
             self._pack(repo_for_rdbox)
             # self._publish(repo_for_rdbox)
@@ -186,15 +197,11 @@ class ChartInSpecificDir(object):
         except Exception as e:
             print(e)
             invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
+        self.remove_by_key_list(invalid_key_list)
         return list(set(invalid_key_list))
 
     def _convert(self, repo_for_rdbox, module_name, helm_module):
         invalid_key_list = []
-        # ToDo
-        # ----- Filter ---------
-        if (module_name == 'common') and helm_module.is_contain_bitnami_string():
-            return invalid_key_list
-        # ----------------------
         try:
             if self.get_annotation() == ChartInSpecificDir.ANNOTATION_ISOLATIONS:
                 self._convert_isolations(repo_for_rdbox, module_name, helm_module)
@@ -202,10 +209,10 @@ class ChartInSpecificDir(object):
                 self._convert_dependons(repo_for_rdbox, module_name, helm_module)
         except ChartInSpecificDirConverError as e:
             invalid_key_list.append(module_name)
-            print("ConvertERR({msg}): {module_name}".find(str(e), module_name))
+            print("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
         except Exception as e:
             invalid_key_list.append(module_name)
-            print("ConvertERR({msg}): {module_name}".find(str(e), module_name))
+            print("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
         finally:
             return invalid_key_list
 
@@ -216,7 +223,7 @@ class ChartInSpecificDir(object):
         helm_module.customize_chartyaml_for_rdbox(dir_to_save_icon)
         helm_command = HelmCommand()
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
-        if not self._verify_manifest_map(manifest_map):
+        if not self._is_correct_manifest_map(manifest_map):
             raise ChartInSpecificDirConverError('Contains workloads (Pods, Deployment, DaemonSet, etc.) for which nodeSelector is not specified.')
         path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
         if os.path.isfile(path_of_generation_result):
@@ -227,10 +234,28 @@ class ChartInSpecificDir(object):
 
     def _convert_dependons(self, repo_for_rdbox, module_name, helm_module):
         helm_module.specify_nodeSelector_for_rdbox()
+        ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
         os.makedirs(dir_to_save_icon, exist_ok=True)
         helm_module.customize_chartyaml_for_rdbox(dir_to_save_icon)
+        ###
+        requirements_yaml = helm_module.get_RequirementsYaml()
+        requirements_yaml.specify_repository_for_rdbox(repo_for_rdbox)
+        requirements_yaml.dump()
+        requirements_yaml.remove_lock_file()
+        requirements_yaml.setup_charts_dir()
+        ###
         helm_command = HelmCommand()
+        ####
+        manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
+        if not self._is_correct_manifest_map(manifest_map):
+            raise ChartInSpecificDirConverError('Contains workloads (Pods, Deployment, DaemonSet, etc.) for which nodeSelector is not specified.')
+        ####
+        path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
+        if os.path.isfile(path_of_generation_result):
+            self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
+        else:
+            raise ChartInSpecificDirConverError(path_of_generation_result)
         print("Convert(DEPENDONS): " + module_name)
 
     def _pack(self, repo_for_rdbox):
@@ -246,11 +271,13 @@ class ChartInSpecificDir(object):
             target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path))
             shutil.move(path, target)
         repo_for_rdbox.commit()
+        self.get_repo().commit()
 
     def _publish(self, repo_for_rdbox):
         repo_for_rdbox.push()
+        self.get_repo().push()
 
-    def _verify_manifest_map(self, manifest_map):
+    def _is_correct_manifest_map(self, manifest_map):
         flg = True
         for filename, manifest in manifest_map.items():
             if manifest is None:
@@ -384,8 +411,9 @@ class ChartInSpecificDir(object):
         specific_dir_path = self.repo.get_dirpath_with_prefix()
         _module_list = self._get_module_list()
         for module_name in _module_list:
-            helm_module = HelmModule(specific_dir_path, module_name, self.repo.get_priority())
-            module_mapping_data.setdefault(module_name, helm_module)
+            if os.path.isfile(os.path.join(specific_dir_path, module_name, 'values.yaml')):
+                helm_module = HelmModule(specific_dir_path, module_name, self.repo.get_priority())
+                module_mapping_data.setdefault(module_name, helm_module)
         return module_mapping_data
 
     def _get_module_list(self):
@@ -542,10 +570,10 @@ class ValuesYaml(object):
                 values_yaml_obj = yaml.safe_load(file)
                 values_yaml_obj = Util.has_key_recursion(values_yaml_obj, 'image')
                 if values_yaml_obj is not None:
-                    if ('repository' not in values_yaml_obj) or ('tag' not in values_yaml_obj):
-                        return False
-                    else:
+                    if ('repository' in values_yaml_obj or 'name' in values_yaml_obj) and ('tag' in values_yaml_obj):
                         return True
+                    else:
+                        return False
         except Exception:
             return False
 
@@ -684,8 +712,10 @@ class Templates(object):
 
 class RequirementsYaml(object):
     def __init__(self, module_dir_path, module_name):
+        self.module_dir_path = module_dir_path
         self.module_name = module_name
         self.full_path = os.path.join(module_dir_path, 'requirements.yaml')
+        self.lock_path = os.path.join(module_dir_path, 'requirements.lock')
         self._rm_module_list = []
         self._list = []
         if os.path.exists(self.full_path):
@@ -704,10 +734,18 @@ class RequirementsYaml(object):
             try:
                 obj = yaml.safe_load(file)
                 for item in obj['dependencies']:
-                    req_obj = RequirementObject(item['name'], item['version'], item['repository'], item.get('condition', ''), item.get('tags', ''))
+                    req_obj = RequirementObject(item['name'], item['version'], item['repository'], item.get('condition', None), item.get('tags', None))
                     self._list.append(req_obj)
             except Exception:
                 self._rm_module_list.append(self.module_name)
+
+    def dump(self):
+        obj = {'dependencies': []}
+        for req_obj in self._list:
+            obj['dependencies'].append(req_obj.get_by_dict())
+        text = yaml.dump(obj)
+        with open(self.full_path, 'w') as file:
+            file.write(text)
 
     def get_rm_module_list(self):
         return self._rm_module_list
@@ -726,9 +764,29 @@ class RequirementsYaml(object):
                 break
         return ret
 
+    def specify_repository_for_rdbox(self, github):
+        parent_url = github.get_url_of_pages()
+        for req_obj in self._list:
+            req_obj.set_repository(parent_url)
+
+    def remove_lock_file(self):
+        try:
+            os.remove(self.lock_path)
+        except FileNotFoundError:
+            pass
+
+    def setup_charts_dir(self):
+        parent_dir_path = str(Path(self.module_dir_path).parent)
+        charts_dir_path = os.path.join(self.module_dir_path, 'charts')
+        os.makedirs(charts_dir_path, exist_ok=True)
+        for req_obj in self._list:
+            src_path = os.path.join(parent_dir_path, req_obj.get_name())
+            dst_path = os.path.join(charts_dir_path, req_obj.get_name())
+            shutil.copytree(src_path, dst_path)
+
 
 class RequirementObject(object):
-    def __init__(self, name, version, repository, condition, tags=None):
+    def __init__(self, name, version, repository, condition=None, tags=None):
         self.name = name
         self.version = version
         self.repository = repository
@@ -747,8 +805,22 @@ class RequirementObject(object):
     def get_repository(self):
         return self.repository
 
+    def set_repository(self, url_repo):
+        self.repository = url_repo
+
     def get_condition(self):
         return self.condition
 
     def get_tags(self):
         return self.tags
+
+    def get_by_dict(self):
+        obj = {}
+        obj.setdefault('name', self.get_name())
+        obj.setdefault('version', self.get_version())
+        obj.setdefault('repository', self.get_repository())
+        if self.get_condition() is not None:
+            obj.setdefault('condition', self.get_condition())
+        if self.get_tags() is not None:
+            obj.setdefault('tags', self.get_tags())
+        return obj

@@ -34,7 +34,7 @@ class HelmCommand(object):
         if len(set_list) > 0:
             set_str = ''
             for set_item in set_list:
-                set_str = set_str + '--set' + ' ' + set_item.replace('[', '\[').replace(']', '\]') + '=DUMMY' + ' '        # noqa: W605
+                set_str = set_str + '--set' + ' ' + set_item.replace('[', '\[').replace(']', '\]') + '=DUMMY' + ' '          # noqa: W605
             cmd_list.append(set_str)
         cmd_list = ' '.join(cmd_list)
         if os.path.isdir(os.path.join(module_dir_path, 'templates', 'tests')):
