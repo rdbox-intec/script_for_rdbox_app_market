@@ -17,7 +17,6 @@ class MissionControl(object):
         repos = []
         repos.append(ReferenceGithubRepos('https://github.com/bitnami/charts.git', 'master', 'bitnami', True, 999))
         repos.append(ReferenceGithubRepos('https://github.com/helm/charts.git', 'master', 'stable', False, 500))
-        repos.append(ReferenceGithubRepos('https://github.com/jupyterhub/zero-to-jupyterhub-k8s.git', 'master', '', False, 600))
         # ----------------- #
         collector = Collector(repos)
         isolations_collect_result, dependons_collect_result = collector.work()

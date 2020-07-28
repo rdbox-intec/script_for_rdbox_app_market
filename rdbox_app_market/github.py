@@ -74,7 +74,7 @@ class ReferenceGithubRepos(GithubRepos):
 
         Args:
             url (str): Accessible Git addresses
-            branch ([type]): Git branch name
+            branch (str): Git branch name
             specific_dir_from_top (str, optional): Specify this if the helm chart is not in the top Git directory, but is stored under that directory. Defaults to ''.
             check_tldr (bool, optional): Whether or not to verify the helm install command following "TL;DR title".. Defaults to False.
             priority (int, optional): Specifies the priority of multiple referenced Git repositories when they exist. The higher the number, the higher the priority. Defaults to 1.
@@ -107,7 +107,7 @@ class RdboxGithubRepos(GithubRepos):
 
         Args:
             url (str): Accessible Git addresses
-            branch ([type]): Git branch name
+            branch (str): Git branch name
             specific_dir_from_top (str, optional): Specify this if the helm chart is not in the top Git directory, but is stored under that directory. Defaults to ''.
             check_tldr (bool, optional): Whether or not to verify the helm install command following "TL;DR title".. Defaults to False.
             priority (int, optional): Specifies the priority of multiple referenced Git repositories when they exist. The higher the number, the higher the priority. Defaults to 1.

@@ -625,6 +625,10 @@ class ValuesYaml(object):
         with open(self.full_path, 'w') as file:
             file.write(file_text)
 
+    def modify_nodeSelector_for_multi_architecture_docker_images(self):
+        with open(self.full_path) as file:
+            pass
+
 
 class ReadmeMd(object):
     def __init__(self, module_dir_path, module_name):
@@ -635,7 +639,7 @@ class ReadmeMd(object):
         try:
             with open(self.full_path) as file:
                 try:
-                    l_XXX_i = [i for i, line in enumerate(file.readlines()) if 'eprecat' in line]
+                    l_XXX_i = [i for i, line in enumerate(file.readlines()) if 'eprecat' in line or 'EPRECAT' in line]
                     if len(l_XXX_i) > 0:
                         if l_XXX_i[0] < 7:
                             return True
