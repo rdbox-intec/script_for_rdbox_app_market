@@ -218,14 +218,22 @@ class ChartInSpecificDir(object):
             return invalid_key_list
 
     def _convert_isolations(self, repo_for_rdbox, module_name, helm_module):
-        helm_module.specify_nodeSelector_for_rdbox()
+        multi_arch_dict = {}
+        try:
+            multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
+        except Exception as e:
+            raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox: {0}'.format(e.message))
+        ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
         os.makedirs(dir_to_save_icon, exist_ok=True)
         helm_module.customize_chartyaml_for_rdbox(dir_to_save_icon)
+        ###
         helm_command = HelmCommand()
+        ###
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
         if not self._is_correct_manifest_map(manifest_map):
             raise ChartInSpecificDirConverError('Contains workloads (Pods, Deployment, DaemonSet, etc.) for which nodeSelector is not specified.')
+        ###
         path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
         if os.path.isfile(path_of_generation_result):
             self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
@@ -234,17 +242,17 @@ class ChartInSpecificDir(object):
         print("Convert(ISOLATIONS): " + module_name)
 
     def _convert_dependons(self, repo_for_rdbox, module_name, helm_module):
-        helm_module.specify_nodeSelector_for_rdbox()
+        multi_arch_dict = {}
+        try:
+            multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
+        except Exception as e:
+            raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox: {0}'.format(e.message))
         ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
         os.makedirs(dir_to_save_icon, exist_ok=True)
         helm_module.customize_chartyaml_for_rdbox(dir_to_save_icon)
         ###
-        requirements_yaml = helm_module.get_RequirementsYaml()
-        requirements_yaml.specify_repository_for_rdbox(repo_for_rdbox)
-        requirements_yaml.dump()
-        requirements_yaml.remove_lock_file()
-        requirements_yaml.setup_charts_dir()
+        helm_module.exec_requirements_yaml_set_commands_with_depend(repo_for_rdbox)
         ###
         helm_command = HelmCommand()
         ####
@@ -480,6 +488,12 @@ class HelmModule(object):
     def get_full_path_to_requirements_yaml(self):
         return self.get_RequirementsYaml().get_full_path()
 
+    def exec_requirements_yaml_set_commands_with_depend(self, repo_for_rdbox):
+        self.get_RequirementsYaml().specify_repository_for_rdbox(repo_for_rdbox)
+        self.get_RequirementsYaml().dump()
+        self.get_RequirementsYaml().remove_lock_file()
+        self.get_RequirementsYaml().setup_charts_dir()
+
     def has_active_nodeSelector(self):
         return self.get_ValuesYaml().has_active_nodeSelector()
 
@@ -598,79 +612,40 @@ class ValuesYaml(object):
 
     def specify_nodeSelector_for_rdbox(self):
         file_text = ""
+        lines = []
         with open(self.full_path) as file:
-            try:
-                #######################
-                lines = file.readlines()
-                obj_values = yaml.safe_load('\n'.join(lines))
-                #######################
-                node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
-                image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
-                multi_arch_dict = {}
-                if len(node_selector_list) == len(image_list):
-                    all_image_list = Util.has_key_recursion_full(obj_values, 'image')
-                    for struct, image_dict in all_image_list.items():
-                        repo_uri = image_dict.get('repository', image_dict.get('name', ''))
-                        if self._is_hosted_on_dockerhub(repo_uri):
-                            url = self._build_url_of_dockerhub(image_dict, repo_uri)
-                            if self._is_multiarch_image(url):
-                                multi_arch_dict.setdefault(struct, repo_uri)
-                #######################
-                flg_find_nodeSelector = False
-                indet_nodeSelector = 0
-                indent_list, indent_unit = self._get_indent_info(lines)
-                now_struct = ['_']
-                prev_indent = 0
-                prev_line_without_comment = ''
-                now_indent = 0
-                ns_str = ''
-                for index, line in enumerate(lines):
-                    now_indent = indent_list[index]
-                    if now_indent >= 0:
-                        if now_indent > prev_indent:
-                            if prev_line_without_comment.strip().endswith(':'):
-                                now_struct.append(prev_line_without_comment.strip().rstrip(':'))
-                        if now_indent < prev_indent:
-                            _unit = (prev_indent - now_indent) / indent_unit
-                            if _unit.is_integer():
-                                for i in range(int(_unit)):
-                                    if len(now_struct) > 1:
-                                        now_struct.pop()
-                    now_struct_str = '.'.join(now_struct)
-                    if re.match(r'^\s*nodeSelector:', line):
-                        indet_nodeSelector = now_indent
-                        ns_str += line
-                        flg_find_nodeSelector = True
-                    else:
-                        if flg_find_nodeSelector:
-                            if line == '\n' or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
-                                print(now_struct_str)
-                                print(ns_str)
-                                ns_obj = yaml.safe_load(ns_str)
-                                if not isinstance(ns_obj.get('nodeSelector'), dict):
-                                    ns_obj = {'nodeSelector': {}}
-                                ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
-                                if now_struct_str not in multi_arch_dict:
-                                    ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
-                                ns_text = yaml.dump(ns_obj, indent=indent_unit)
-                                for text in ns_text.split('\n'):
-                                    if text != '':
-                                        file_text = file_text + ' ' * indet_nodeSelector + text + '\n'
-                                file_text = file_text + line
-                                flg_find_nodeSelector = False
-                                ns_str = ''
-                            else:
-                                ns_str += line
-                                continue
-                        else:
-                            file_text += line
-                    if now_indent >= 0:
-                        prev_indent = now_indent
-                        prev_line_without_comment = line
-            except Exception as e:
-                print(e)
+            lines = file.readlines()
+        multi_arch_dict = self._get_multi_arch_dict(lines)
+        indent_list, indent_unit = self._get_indent_info(lines)
+        structure = Structure(indent_unit)
+        fileter_of_nodeSelector = FilterOfNodeSelector(indent_unit)
+        for i, line in enumerate(lines):
+            now_indent = indent_list[i]
+            now_struct_str = structure.update(line, now_indent)
+            if fileter_of_nodeSelector.is_processing():
+                print(now_struct_str)
+                is_multi_arch = now_struct_str in multi_arch_dict
+                file_text += fileter_of_nodeSelector.filter(line, now_indent, is_multi_arch)
+            else:
+                file_text += fileter_of_nodeSelector.filter(line, now_indent)
         with open(self.full_path, 'w') as file:
             file.write(file_text)
+        return multi_arch_dict
+
+    def _get_multi_arch_dict(self, lines):
+        multi_arch_dict = {}
+        obj_values = yaml.safe_load('\n'.join(lines))
+        node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
+        image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
+        if len(node_selector_list) == len(image_list):
+            all_image_list = Util.has_key_recursion_full(obj_values, 'image')
+            for struct, image_dict in all_image_list.items():
+                repo_uri = image_dict.get('repository', image_dict.get('name', ''))
+                if self._is_hosted_on_dockerhub(repo_uri):
+                    url = self._build_url_of_dockerhub(image_dict, repo_uri)
+                    if self._has_multiarch_image(url):
+                        multi_arch_dict.setdefault(struct, repo_uri)
+        return multi_arch_dict
 
     def _is_hosted_on_dockerhub(self, repo_url):
         repo_url_list = repo_url.split('/')
@@ -687,7 +662,7 @@ class ValuesYaml(object):
         url = 'https://hub.docker.com/v2/repositories/{uri}/tags/{tag}'.format(uri=uri, tag=image_tag_dict.get('tag'))
         return url
 
-    def _is_multiarch_image(self, url):
+    def _has_multiarch_image(self, url):
         has_arch_arm = False
         r = requests.get(url)
         if r.status_code == requests.codes.ok:
@@ -698,82 +673,119 @@ class ValuesYaml(object):
         return has_arch_arm
 
     def _get_indent_info(self, lines):
-        result_indent_list = []
-        indent_length_of_processing_line = 0
-
-        # state-dependent (1. block of yaml) #
-        is_block_of_yaml_in_processing = False
-        indent_length_of_block_of_yaml = -1
-        ######################################
-        # state-dependent (2. list of yaml) #
-        is_list_of_yaml_in_processing = False
-        indent_length_of_list_of_yaml = -1
-        #####################################
-
+        il = IndentList()
         for line in lines:
-            # Validation #
-            if re.match(r'^\s*#', line) or re.match(r'^\s*\n', line):
-                indent_length_of_processing_line = -1
-                result_indent_list.append(indent_length_of_processing_line)
-                continue
-            ##############
+            il.add_with_line_of_text(line)
+        return il.to_list(), il.get_unit_indent_length()
 
-            indent_length_of_processing_line = self._get_indent_length_of_target(line)
 
-            # state-dependent (1. block of yaml) #
-            if re.match(r'^\s*[0-9a-zA-Z\-]{1,}: (\>|\|)(\-|\+|)', line):
-                is_block_of_yaml_in_processing = True
-                # Nested list solution.
-                if indent_length_of_block_of_yaml == -1:
-                    indent_length_of_block_of_yaml = indent_length_of_processing_line
-                indent_length_of_processing_line = -1
-                result_indent_list.append(indent_length_of_processing_line)
-                continue
-            if is_block_of_yaml_in_processing and indent_length_of_processing_line >= 0:
-                if indent_length_of_processing_line > indent_length_of_block_of_yaml:
-                    # The yaml list continues.
-                    indent_length_of_processing_line = -1
-                    result_indent_list.append(indent_length_of_processing_line)
-                    continue
-                else:
-                    # The yaml list ends.
-                    is_block_of_yaml_in_processing = False
-                    indent_length_of_block_of_yaml = -1
-                    result_indent_list.append(indent_length_of_processing_line)
-                    continue
-            ######################################
+class FilterOfNodeSelector(object):
+    def __init__(self, indent_unit):
+        self.indent_unit = indent_unit
+        self.node_selector_indent = 0
+        self.is_ns_in_processing = False
+        self.original_nodeSelector_text = ''
 
-            # state-dependent (2. list of yaml) #
-            if re.match(r'^\s*-', line):
-                is_list_of_yaml_in_processing = True
-                # Nested list solution.
-                if indent_length_of_list_of_yaml == -1:
-                    indent_length_of_list_of_yaml = indent_length_of_processing_line
-                indent_length_of_processing_line = -1
-                result_indent_list.append(indent_length_of_processing_line)
-                continue
-            if is_list_of_yaml_in_processing and indent_length_of_processing_line >= 0:
-                if indent_length_of_processing_line > indent_length_of_list_of_yaml:
-                    # The yaml list continues.
-                    indent_length_of_processing_line = -1
-                    result_indent_list.append(indent_length_of_processing_line)
-                    continue
-                else:
-                    # The yaml list ends.
-                    is_list_of_yaml_in_processing = False
-                    indent_length_of_list_of_yaml = -1
-                    result_indent_list.append(indent_length_of_processing_line)
-                    continue
-            #####################################
+    def filter(self, line, indent, is_multi_arch=False):
+        if not self.is_ns_in_processing:
+            if self._is_start_of_block_element(line, indent):
+                return ''
+            else:
+                return line
+        else:
+            return self._processing_of_block_elements(line, is_multi_arch)
 
-            # other
-            result_indent_list.append(indent_length_of_processing_line)
+    def is_processing(self):
+        return self.is_ns_in_processing
 
-        return result_indent_list, self._get_unit_indent_length(result_indent_list)
+    def _is_start_of_block_element(self, line, indent):
+        if re.match(r'^\s*nodeSelector:', line):
+            self.is_ns_in_processing = True
+            self.original_nodeSelector_text += line
+            self.node_selector_indent = indent
+            return True
+        return False
 
-    def _get_unit_indent_length(self, indent_list):
+    def _processing_of_block_elements(self, line, is_multi_arch=False):
+        file_text = ''
+        if line == '\n' or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
+            print(self.original_nodeSelector_text)
+            ns_obj = yaml.safe_load(self.original_nodeSelector_text)
+            if not isinstance(ns_obj.get('nodeSelector'), dict):
+                ns_obj = {'nodeSelector': {}}
+            ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
+            if not is_multi_arch:
+                ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
+            aligned_nodeSelector_text = yaml.dump(ns_obj, indent=self.indent_unit)
+            for text in aligned_nodeSelector_text.split('\n'):
+                file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
+            self._reset()
+        else:
+            self.original_nodeSelector_text += line
+        return file_text
+
+    def _reset(self):
+        self.is_ns_in_processing = False
+        self.original_nodeSelector_text = ''
+
+
+class Structure(object):
+    def __init__(self, indent_unit):
+        self.struct = ['_']
+        self.indent_unit = indent_unit
+        self.prev_indent = 0
+        self.prev_line_without_comment = ''
+
+    def update(self, line, now_indent):
+        if now_indent >= 0:
+            if now_indent > self.prev_indent:
+                if self.prev_line_without_comment.strip().endswith(':'):
+                    self.struct.append(self.prev_line_without_comment.strip().rstrip(':'))
+            if now_indent < self.prev_indent:
+                _unit = (self.prev_indent - now_indent) / self.indent_unit
+                if _unit.is_integer():
+                    for i in range(int(_unit)):
+                        if len(self.struct) > 1:
+                            self.struct.pop()
+            self.prev_line_without_comment = line
+            self.prev_indent = now_indent
+        return self.to_str()
+
+    def to_str(self, sep='.'):
+        return sep.join(self.struct)
+
+
+class IndentList(object):
+    def __init__(self):
+        self.result_indent_list = []
+        # Filter #
+        self.filters = []
+        self.filters.append(FilterOfBlockElementForIndentList(r'^\s*[0-9a-zA-Z\-]{1,}: (\>|\|)(\-|\+|)'))  # Multi Line Element
+        self.filters.append(FilterOfBlockElementForIndentList(r'^\s*-'))                                   # List Element
+
+    def append(self, indent):
+        self.result_indent_list.append(indent)
+
+    def to_list(self):
+        return self.result_indent_list
+
+    def add_with_line_of_text(self, line):
+        # Validation #
+        if re.match(r'^\s*#', line) or re.match(r'^\s*\n', line):
+            self.append(-1)
+            return
+        # RAW Indent #
+        indent_length_of_processing_line = self._get_indent_length_of_target(line)
+        # Filter #
+        for filter in self.filters:
+            if filter.is_filterd(line, indent_length_of_processing_line):
+                self.append(-1)
+                return
+        self.append(indent_length_of_processing_line)
+
+    def get_unit_indent_length(self):
         unit = 0
-        for indent in indent_list:
+        for indent in self.result_indent_list:
             if indent == -1:
                 continue
             if indent > 0:
@@ -789,6 +801,42 @@ class ValuesYaml(object):
         else:
             indent_length = 0
         return indent_length
+
+
+class FilterOfBlockElementForIndentList(object):
+    def __init__(self, regex):
+        self.regex = regex
+        self.is_block_of_yaml_in_processing = False
+        self.indent_length_of_block_of_yaml = -1
+
+    def is_filterd(self, line, indent_length_of_processing_line):
+        if not self.is_block_of_yaml_in_processing:
+            if self._is_start_of_block_element(line, indent_length_of_processing_line):
+                return True
+        return self._processing_of_block_elements(indent_length_of_processing_line)
+
+    def _is_start_of_block_element(self, line, indent_length_of_processing_line):
+        if re.match(self.regex, line):
+            self.is_block_of_yaml_in_processing = True
+            if self.indent_length_of_block_of_yaml == -1:
+                self.indent_length_of_block_of_yaml = indent_length_of_processing_line
+            return True
+        return False
+
+    def _processing_of_block_elements(self, indent_length_of_processing_line):
+        if self.is_block_of_yaml_in_processing and indent_length_of_processing_line >= 0:
+            if indent_length_of_processing_line > self.indent_length_of_block_of_yaml:
+                # countinue
+                return True
+            else:
+                # end
+                self._reset()
+                return False
+        return False
+
+    def _reset(self):
+        self.is_block_of_yaml_in_processing = False
+        self.indent_length_of_list_of_yaml = -1
 
 
 class ReadmeMd(object):
@@ -867,12 +915,6 @@ class ReadmeMd(object):
             return set_list
         else:
             return []
-
-
-class Templates(object):
-    def __init__(self, module_dir_path, module_name):
-        self.module_name = module_name
-        self.templates_dir_path = os.path.join(module_dir_path, 'templates')
 
 
 class RequirementsYaml(object):
