@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
+from __future__ import annotations                      # noqa: F404
+
 import os
 import shutil
-import requests
 import yaml
 import re
-from pathlib import Path
 import urllib.request
+
+from pathlib import Path
 
 from rdbox_app_market.util import Util
 from rdbox_app_market.helm import HelmCommand
-from rdbox_app_market.github import RdboxGithubRepos
+from rdbox_app_market.github import GithubRepos, RdboxGithubRepos
+from rdbox_app_market.values_yaml import ValuesYaml
 
 
 class Collector(object):
@@ -31,16 +34,21 @@ class Collector(object):
             check_tldr=False,
             priority=999)
 
-    def work(self):
+    def work(self) -> tuple[ChartInSpecificDir]:
+        """Do the work
+
+        Returns:
+            Tuple[ChartInSpecificDir, ChartInSpecificDir]: 1st is Non-dependent charts. 2nd is Charts with dependencies.
+        """
         chart_in_specific_dir = ChartInSpecificDir(self.rdbox_master_repo, ChartInSpecificDir.ANNOTATION_OTHERS)
         for repo in self.reference_repos:
             print('------------------- {url} ------------------'.format(url=repo.get_url()))
-            now_processing_isolations, now_processing_dependons = NonAnalyzeChartInSpecificDir(repo).analyze()
+            now_processing_isolations, now_processing_dependons = NonAnalyzeChartInSpecificDir(repo).preprocessing()
             chart_in_specific_dir.merge(now_processing_isolations)
             chart_in_specific_dir.merge(now_processing_dependons)
         chart_in_specific_dir.move_entity()
         ################
-        isolations_collect_result, dependons_collect_result = chart_in_specific_dir.analyze()
+        isolations_collect_result, dependons_collect_result = chart_in_specific_dir.preprocessing()
         return isolations_collect_result, dependons_collect_result
 
 
@@ -58,21 +66,40 @@ class Publisher(object):
         """
         self.isolations = isolations
         self.dependons = dependons
-
-    def work(self):
-        rdbox_gh_repo = RdboxGithubRepos(
+        self.rdbox_gh_repo = RdboxGithubRepos(
             'git@github.com:rdbox-intec/rdbox_app_market.git',
             'gh-pages',
             specific_dir_from_top='rdbox',
             check_tldr=False,
             priority=999)
-        print('------------------- {url} ------------------'.format(url=rdbox_gh_repo.get_url()))
-        invalid_key_list = self.isolations.convert(rdbox_gh_repo)
+
+    def work(self) -> ChartInSpecificDir:
+        """Do the work
+
+        - convert
+            - specify_nodeSelector_for_rdbox
+            - Scraping icon images
+            - customize_chartyaml_for_rdbox
+            - helm_command.template
+            - helm_command.package
+        - pack
+            - helm_command.repo_index
+            - commit
+        - publish
+            - push
+
+        Returns:
+            ChartInSpecificDir: Information about the Helm Chart to be published in the RDBOX App Market.
+        """
+        print('------------------- {url} ------------------'.format(url=self.rdbox_gh_repo.get_url()))
+        #########
+        invalid_key_list = self.isolations.convert(self.rdbox_gh_repo)
         self.dependons.remove_by_depend_modules_list(invalid_key_list)
-        invalid_key_list = self.dependons.convert(rdbox_gh_repo)
-        self.dependons.merge(self.isolations)
-        self.dependons.publish(rdbox_gh_repo)
-        return self.dependons
+        _ = self.dependons.convert(self.rdbox_gh_repo)
+        #########
+        rdbox_app_market_all_chart = self.dependons.merge(self.isolations)
+        rdbox_app_market_all_chart.publish(self.rdbox_gh_repo)
+        return rdbox_app_market_all_chart
 
 
 class ChartInSpecificDirConverError(Exception):
@@ -89,11 +116,11 @@ class ChartInSpecificDir(object):
     ANNOTATION_ISOLATIONS = 'isolations'
     ANNOTATION_DEPENDONS = 'dependons'
 
-    def __init__(self, repo, annotation=ANNOTATION_OTHERS):
+    def __init__(self, repo: GithubRepos, annotation=ANNOTATION_OTHERS):
         """Constructor
 
         Args:
-            repo (ReferenceGithubRepos): GitHub repositories to reference.
+            repo (GithubRepos): GitHub repositories to reference.
             annotation (str, optional): The classification of the data held by GitHub repositories when it is classified.
         """
         self.repo = repo
@@ -110,26 +137,49 @@ class ChartInSpecificDir(object):
     def __repr__(self):
         return str(self.get_all_HelmModule_mapped_by_module_name())
 
-    def get_repo(self):
+    def get_repo(self) -> GithubRepos:
+        """Get the Git repository that manages this directory.
+
+        Returns:
+            GithubRepos: The Git repository that manages this directory.
+        """
         return self.repo
 
-    def get_annotation(self):
+    def get_annotation(self) -> str:
+        """Get annotation string
+
+        - others, isolations, dependons
+
+        Returns:
+            str: annotation string.
+        """
         return self.annotation
 
-    def get_specific_dirpath(self):
+    def get_specific_dirpath(self) -> str:
+        """Get the directory path where the chart is stored (full path)
+
+        Returns:
+            str: The directory path where the chart is stored (full path)
+        """
         return self.specific_dirpath
 
-    def get_all_HelmModule_mapped_by_module_name(self):
+    def get_all_HelmModule_mapped_by_module_name(self) -> dict[str, HelmModule]:
+        """Get all HelmModule mapped by module_name.
+
+        Returns:
+            dict[str, HelmModule]: all HelmModule mapped by module_name.
+        """
         return self.all_HelmModule_mapped_by_module_name
 
-    def get_all_packaged_tgz_path_mapped_by_module_name(self):
+    def get_all_packaged_tgz_path_mapped_by_module_name(self) -> dict[str, str]:
+        """Get all packaged tgz path mapped by module_name.
+
+        Returns:
+            dict[str, str]: All packaged tgz path mapped by module_name.
+        """
         return self.all_packaged_tgz_path_mapped_by_module_name
 
-    def update(self, all_RequirementsYaml_mapped_by_module_name):
-        self.all_HelmModule_mapped_by_module_name.update(all_RequirementsYaml_mapped_by_module_name)
-        return self
-
-    def merge(self, other):
+    def merge(self, other: ChartInSpecificDir) -> ChartInSpecificDir:
         """Update the contents of the dictionary with other keys and values.
 
         The content is overwritten according to the priority order.
@@ -154,7 +204,9 @@ class ChartInSpecificDir(object):
                     self.get_all_packaged_tgz_path_mapped_by_module_name().setdefault(module_name, other.get_all_packaged_tgz_path_mapped_by_module_name()[module_name])
         return self
 
-    def move_entity(self):
+    def move_entity(self) -> None:
+        """Move the entity (file or directory) of the helm chart to the directory where this instant is managed.
+        """
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             path = os.path.join(self.get_specific_dirpath(), module_name)
             try:
@@ -166,32 +218,63 @@ class ChartInSpecificDir(object):
             except Exception as e:
                 print(e)
 
-    def analyze(self):
-        self.all_HelmModule_mapped_by_module_name = {}
-        self.all_HelmModule_mapped_by_module_name = self._get_HelmModule_all()
-        isolations_collect_result, dependons_collect_result = self.excludes_unknown_dependencies()
-        invalid_key_list = isolations_collect_result.get_invalid_key_list()
+    def preprocessing(self) -> tuple[ChartInSpecificDir]:
+        """Pre-processing before converting to charts for RDBOX App Market.
+
+        - Filtering Charts with Unknown Dependencies.
+            - Separate charts with dependencies and charts without dependencies.
+        - Filter out charts that do not meet the specifications.
+            - Can't select a nodeSelector.
+            - Bad image key structure
+            - deprecated image
+
+        Returns:
+            Tuple[ChartInSpecificDir, ChartInSpecificDir]: 1st is Non-dependent charts. 2nd is Charts with dependencies.
+        """
+        self.all_HelmModule_mapped_by_module_name = self.get_HelmModule_all()
+        ########
+        isolations_collect_result, dependons_collect_result = self.__excludes_unknown_dependencies()
+        ########
+        invalid_key_list = isolations_collect_result.__get_invalid_key_list()
         isolations_collect_result.remove_by_key_list(invalid_key_list)
         dependons_collect_result.remove_by_depend_modules_list(invalid_key_list)
-        invalid_key_list = dependons_collect_result.get_invalid_key_list()
+        ########
+        invalid_key_list = dependons_collect_result.__get_invalid_key_list()
         dependons_collect_result.remove_by_key_list(invalid_key_list)
+        ########
         return isolations_collect_result, dependons_collect_result
 
-    def convert(self, repo_for_rdbox):
+    def convert(self, repo_for_rdbox: GithubRepos) -> list[str]:
+        """Convert to RDBOX App Market chart.
+
+        Args:
+            repo_for_rdbox (GithubRepos): Github repository (like gh-pages) for publishing RDBOX App Market
+
+        Returns:
+            list[str]: List of module names that failed to be converted.
+        """
         invalid_key_list = []
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
-            _invalids = self._convert(repo_for_rdbox, module_name, helm_module)
+            _invalids = self.__convert(repo_for_rdbox, module_name, helm_module)
             invalid_key_list.extend(_invalids)
         for module_name in invalid_key_list:
             print('Delete(MISS_CONVERT): ' + module_name)
         self.remove_by_key_list(invalid_key_list)
         return list(set(invalid_key_list))
 
-    def publish(self, repo_for_rdbox):
+    def publish(self, repo_for_rdbox: GithubRepos) -> list[str]:
+        """Push (publish) the corresponding Git repository in order to make it presentable for publishing helm charts.
+
+        Args:
+            repo_for_rdbox (GithubRepos): Github repository (like gh-pages) for publishing RDBOX App Market
+
+        Returns:
+            list[str]: List of module names that failed to be published.
+        """
         invalid_key_list = []
         try:
-            self._pack(repo_for_rdbox)
-            # self._publish(repo_for_rdbox)
+            self.__pack(repo_for_rdbox)
+            self.__publish(repo_for_rdbox)
         except ChartInSpecificDirPackError as e:
             print("PackERR({msg})".find(str(e)))
             invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
@@ -201,13 +284,50 @@ class ChartInSpecificDir(object):
         self.remove_by_key_list(invalid_key_list)
         return list(set(invalid_key_list))
 
-    def _convert(self, repo_for_rdbox, module_name, helm_module):
+    def remove_by_key_list(self, module_name_list: list[str]) -> None:
+        """The Helm chart information of the specified module name is removed from the managed object.
+
+        Args:
+            module_name_list (list[str]): List of module names to be removed.
+        """
+        for key in list(set(module_name_list)):
+            self.__delete_entity_by_module_name(key)
+            self.all_HelmModule_mapped_by_module_name.pop(key)
+
+    def remove_by_depend_modules_list(self, module_name_list: list[str]) -> None:
+        """If the specified list of modules contains a dependent module, exclude the chart from being managed.
+
+        - This is only valid for charts that have dependencies.
+
+        Args:
+            module_name_list (list[str]): List of dependent modules to be verified.
+        """
+        del_keys = []
+        for depend_module_name in module_name_list:
+            for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
+                if helm_module.has_module_of_dependencies(depend_module_name):
+                    del_keys.append(module_name)
+        for key in list(set(del_keys)):
+            print('Delete(INVALID_DEP): ' + key)
+            self.__delete_entity_by_module_name(key)
+            self.all_HelmModule_mapped_by_module_name.pop(key)
+
+    def get_HelmModule_all(self):
+        module_mapping_data = {}
+        _module_list = self.__get_module_list()
+        for module_name in _module_list:
+            if os.path.isfile(os.path.join(self.get_specific_dirpath(), module_name, 'values.yaml')):
+                helm_module = HelmModule(self.get_specific_dirpath(), module_name, self.repo.get_priority())
+                module_mapping_data.setdefault(module_name, helm_module)
+        return module_mapping_data
+
+    def __convert(self, repo_for_rdbox, module_name, helm_module):
         invalid_key_list = []
         try:
             if self.get_annotation() == ChartInSpecificDir.ANNOTATION_ISOLATIONS:
-                self._convert_isolations(repo_for_rdbox, module_name, helm_module)
+                self.__convert_isolations(repo_for_rdbox, module_name, helm_module)
             elif self.get_annotation() == ChartInSpecificDir.ANNOTATION_DEPENDONS:
-                self._convert_dependons(repo_for_rdbox, module_name, helm_module)
+                self.__convert_dependons(repo_for_rdbox, module_name, helm_module)
         except ChartInSpecificDirConverError as e:
             invalid_key_list.append(module_name)
             print("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
@@ -217,7 +337,7 @@ class ChartInSpecificDir(object):
         finally:
             return invalid_key_list
 
-    def _convert_isolations(self, repo_for_rdbox, module_name, helm_module):
+    def __convert_isolations(self, repo_for_rdbox, module_name, helm_module):
         multi_arch_dict = {}
         try:
             multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
@@ -231,7 +351,7 @@ class ChartInSpecificDir(object):
         helm_command = HelmCommand()
         ###
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
-        if not self._is_correct_manifest_map(manifest_map):
+        if not self.__is_correct_manifest_map(manifest_map):
             raise ChartInSpecificDirConverError('Contains workloads (Pods, Deployment, DaemonSet, etc.) for which nodeSelector is not specified.')
         ###
         path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
@@ -241,7 +361,7 @@ class ChartInSpecificDir(object):
             raise ChartInSpecificDirConverError(path_of_generation_result)
         print("Convert(ISOLATIONS): " + module_name)
 
-    def _convert_dependons(self, repo_for_rdbox, module_name, helm_module):
+    def __convert_dependons(self, repo_for_rdbox, module_name, helm_module):
         multi_arch_dict = {}
         try:
             multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
@@ -257,7 +377,7 @@ class ChartInSpecificDir(object):
         helm_command = HelmCommand()
         ####
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
-        if not self._is_correct_manifest_map(manifest_map):
+        if not self.__is_correct_manifest_map(manifest_map):
             raise ChartInSpecificDirConverError('Contains workloads (Pods, Deployment, DaemonSet, etc.) for which nodeSelector is not specified.')
         ####
         path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
@@ -267,7 +387,7 @@ class ChartInSpecificDir(object):
             raise ChartInSpecificDirConverError(path_of_generation_result)
         print("Convert(DEPENDONS): " + module_name)
 
-    def _pack(self, repo_for_rdbox):
+    def __pack(self, repo_for_rdbox):
         helm_command = HelmCommand()
         path_of_generation_result = helm_command.repo_index(self.get_specific_dirpath())
         if os.path.isfile(path_of_generation_result):
@@ -282,11 +402,23 @@ class ChartInSpecificDir(object):
         repo_for_rdbox.commit()
         self.get_repo().commit()
 
-    def _publish(self, repo_for_rdbox):
+    def __publish(self, repo_for_rdbox):
         repo_for_rdbox.push()
         self.get_repo().push()
 
-    def _is_correct_manifest_map(self, manifest_map):
+    def __update(self, all_RequirementsYaml_mapped_by_module_name):
+        """Overwrite with dict(all_RequirementsYaml_mapped_by_module_name).
+
+        Args:
+            all_RequirementsYaml_mapped_by_module_name (dict[str, HelmModule]): All requirements.yaml mapped by module_name.
+
+        Returns:
+            ChartInSpecificDir: This instance.
+        """
+        self.all_HelmModule_mapped_by_module_name.update(all_RequirementsYaml_mapped_by_module_name)
+        return self
+
+    def __is_correct_manifest_map(self, manifest_map):
         flg = True
         for filename, manifest in manifest_map.items():
             if manifest is None:
@@ -305,23 +437,7 @@ class ChartInSpecificDir(object):
                 continue
         return flg
 
-    def remove_by_key_list(self, key_list):
-        for key in list(set(key_list)):
-            self.delete_entity_by_module_name(key)
-            self.all_HelmModule_mapped_by_module_name.pop(key)
-
-    def remove_by_depend_modules_list(self, depend_modules_list):
-        del_keys = []
-        for depend_module_name in depend_modules_list:
-            for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
-                if helm_module.has_module_of_dependencies(depend_module_name):
-                    del_keys.append(module_name)
-        for key in list(set(del_keys)):
-            print('Delete(INVALID_DEP): ' + key)
-            self.delete_entity_by_module_name(key)
-            self.all_HelmModule_mapped_by_module_name.pop(key)
-
-    def excludes_unknown_dependencies(self):
+    def __excludes_unknown_dependencies(self):
         isolations = {}      # An independent helm chart on which no other dependencies exist.
         dependons = {}       # Other helm chart-dependent modules.
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
@@ -343,32 +459,32 @@ class ChartInSpecificDir(object):
                         del_keys.append(module_name)
         for key in list(set(del_keys)):
             print('Delete(UNKNOWN_DEP): ' + key)
-            self.delete_entity_by_module_name(key)
+            self.__delete_entity_by_module_name(key)
             dependons.pop(key)
-        return (ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_ISOLATIONS).update(isolations),
-                ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_DEPENDONS).update(dependons))
+        return (ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_ISOLATIONS).__update(isolations),
+                ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_DEPENDONS).__update(dependons))
 
-    def delete_entity_by_module_name(self, module_name):
+    def __delete_entity_by_module_name(self, module_name):
         dir_path = os.path.join(self.get_specific_dirpath(), module_name)
         try:
             shutil.rmtree(dir_path)
         except FileNotFoundError:
             pass
 
-    def get_invalid_key_list(self):
+    def __get_invalid_key_list(self):
         invalid_keys = []
-        not_has_key_nodeSelector = self._filter_nodeselector()
-        invalid_imagetag = self._filter_valuesyaml_imagetag()
-        deprecated = self._filter_deprecate()
+        not_has_key_nodeSelector = self.__filter_nodeselector()
+        invalid_imagetag = self.__filter_valuesyaml_imagetag()
+        deprecated = self.__filter_deprecate()
         invalid_keys += not_has_key_nodeSelector
         invalid_keys += invalid_imagetag
         invalid_keys += deprecated
         if self.repo.get_check_tldr():
-            tldr = self._filter_tldr()
+            tldr = self.__filter_tldr()
             invalid_keys += tldr
         return list(set(invalid_keys))
 
-    def _filter_nodeselector(self):
+    def __filter_nodeselector(self):
         invalid_module = {}
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             # Special support for bitnami.
@@ -388,7 +504,7 @@ class ChartInSpecificDir(object):
             print('Delete(nodeSelector): ' + module_name)
         return list(set(invalid_module.keys()))
 
-    def _filter_valuesyaml_imagetag(self):
+    def __filter_valuesyaml_imagetag(self):
         invalid_module = []
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             # Special support for bitnami.
@@ -400,7 +516,7 @@ class ChartInSpecificDir(object):
             print('Delete(imageTag): ' + module_name)
         return list(set(invalid_module))
 
-    def _filter_deprecate(self):
+    def __filter_deprecate(self):
         invalid_module = []
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             if helm_module.is_contain_deprecate_string_at_head():
@@ -409,7 +525,7 @@ class ChartInSpecificDir(object):
             print('Delete(deprecate): ' + module_name)
         return list(set(invalid_module))
 
-    def _filter_tldr(self):
+    def __filter_tldr(self):
         invalid_module = []
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
             # Special support for bitnami.
@@ -421,17 +537,7 @@ class ChartInSpecificDir(object):
             print('Delete(TLDR): ' + module_name)
         return list(set(invalid_module))
 
-    def _get_HelmModule_all(self):
-        module_mapping_data = {}
-        specific_dir_path = self.repo.get_dirpath_with_prefix()
-        _module_list = self._get_module_list()
-        for module_name in _module_list:
-            if os.path.isfile(os.path.join(specific_dir_path, module_name, 'values.yaml')):
-                helm_module = HelmModule(specific_dir_path, module_name, self.repo.get_priority())
-                module_mapping_data.setdefault(module_name, helm_module)
-        return module_mapping_data
-
-    def _get_module_list(self):
+    def __get_module_list(self):
         stable_module_path = self.repo.get_dirpath_with_prefix()
         li = os.listdir(stable_module_path)
         return li
@@ -440,7 +546,7 @@ class ChartInSpecificDir(object):
 class NonAnalyzeChartInSpecificDir(ChartInSpecificDir):
     def __init__(self, repo, annotation=ChartInSpecificDir.ANNOTATION_OTHERS):
         super().__init__(repo, annotation)
-        self.all_HelmModule_mapped_by_module_name = self._get_HelmModule_all()
+        self.all_HelmModule_mapped_by_module_name = self.get_HelmModule_all()
 
 
 class HelmModule(object):
@@ -536,307 +642,26 @@ class ChartYaml(object):
     def customize_chartyaml_for_rdbox(self, dir_to_save_icon):
         file_text = ''
         with open(self.full_path) as file:
-            try:
-                obj_values = yaml.safe_load(file)
-                obj_values['maintainers'] = [{'name': 'RDBOX Project', 'email': 'info-rdbox@intec.co.jp'}]
-                # collect icon image and change the url to RDBOX #
-                url = obj_values.get('icon', None)
-                if url is not None:
-                    original_file_name = url.split('/')[-1]
-                    _, original_file_ext = os.path.splitext(original_file_name)
-                    icon_filename = self.module_name + original_file_ext
-                    try:
-                        urllib.request.urlretrieve(url, os.path.join(dir_to_save_icon, icon_filename))
-                        obj_values['icon'] = 'https://raw.githubusercontent.com/rdbox-intec/rdbox_app_market/master/icons/' + icon_filename
-                    except Exception:
-                        pass
-                ##################################################
-                file_text = yaml.dump(obj_values)
-            except Exception as e:
-                print(e)
-        with open(self.full_path, 'w') as file:
-            file.write(file_text)
-
-
-class ValuesYaml(object):
-    def __init__(self, module_dir_path, module_name):
-        self.module_name = module_name
-        self.full_path = os.path.join(module_dir_path, 'values.yaml')
-
-    def has_active_nodeSelector(self):
-        with open(self.full_path) as file:
-            try:
-                obj_values = yaml.safe_load(file)
-                if Util.has_key_recursion(obj_values, 'nodeSelector') is None:
-                    return False
-                else:
-                    return True
-            except Exception as e:
-                print(e)
-
-    def has_commentout_nodeSelector(self):
-        with open(self.full_path) as file:
-            try:
-                l_XXX_i = [i for i, line in enumerate(file.readlines()) if '# nodeSelector: ' in line]
-                if len(l_XXX_i) > 0:
-                    return True
-                else:
-                    return False
-            except Exception as e:
-                print(e)
-
-    def has_expected_structure_for_imagetag(self):
+            obj_values = yaml.safe_load(file)
         try:
-            with open(self.full_path) as file:
-                values_yaml_obj = yaml.safe_load(file)
-                values_yaml_obj = Util.has_key_recursion(values_yaml_obj, 'image')
-                if values_yaml_obj is not None:
-                    if ('repository' in values_yaml_obj or 'name' in values_yaml_obj) and ('tag' in values_yaml_obj):
-                        return True
-                    else:
-                        return False
-        except Exception:
-            return False
-
-    def correct_commentout_nodeSelector(self):
-        file_text = ''
-        with open(self.full_path) as file:
-            try:
-                file_text = file.read()
-                file_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
-            except Exception as e:
-                print(e)
-        with open(self.full_path, 'w') as file:
-            print("Modify(nodeSelector): " + self.module_name)
-            file.write(file_text)
-
-    def specify_nodeSelector_for_rdbox(self):
-        file_text = ""
-        lines = []
-        with open(self.full_path) as file:
-            lines = file.readlines()
-        multi_arch_dict = self._get_multi_arch_dict(lines)
-        indent_list, indent_unit = self._get_indent_info(lines)
-        structure = Structure(indent_unit)
-        fileter_of_nodeSelector = FilterOfNodeSelector(indent_unit)
-        for i, line in enumerate(lines):
-            now_indent = indent_list[i]
-            now_struct_str = structure.update(line, now_indent)
-            if fileter_of_nodeSelector.is_processing():
-                print(now_struct_str)
-                is_multi_arch = now_struct_str in multi_arch_dict
-                file_text += fileter_of_nodeSelector.filter(line, now_indent, is_multi_arch)
-            else:
-                file_text += fileter_of_nodeSelector.filter(line, now_indent)
+            obj_values['maintainers'] = [{'name': 'RDBOX Project', 'email': 'info-rdbox@intec.co.jp'}]
+            # collect icon image and change the url to RDBOX #
+            url = obj_values.get('icon', None)
+            if url is not None:
+                original_file_name = url.split('/')[-1]
+                _, original_file_ext = os.path.splitext(original_file_name)
+                icon_filename = self.module_name + original_file_ext
+                try:
+                    urllib.request.urlretrieve(url, os.path.join(dir_to_save_icon, icon_filename))
+                    obj_values['icon'] = 'https://raw.githubusercontent.com/rdbox-intec/rdbox_app_market/master/icons/' + icon_filename
+                except Exception:
+                    pass
+            ##################################################
+            file_text = yaml.dump(obj_values)
+        except Exception as e:
+            print(e)
         with open(self.full_path, 'w') as file:
             file.write(file_text)
-        return multi_arch_dict
-
-    def _get_multi_arch_dict(self, lines):
-        multi_arch_dict = {}
-        obj_values = yaml.safe_load('\n'.join(lines))
-        node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
-        image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
-        if len(node_selector_list) == len(image_list):
-            all_image_list = Util.has_key_recursion_full(obj_values, 'image')
-            for struct, image_dict in all_image_list.items():
-                repo_uri = image_dict.get('repository', image_dict.get('name', ''))
-                if self._is_hosted_on_dockerhub(repo_uri):
-                    url = self._build_url_of_dockerhub(image_dict, repo_uri)
-                    if self._has_multiarch_image(url):
-                        multi_arch_dict.setdefault(struct, repo_uri)
-        return multi_arch_dict
-
-    def _is_hosted_on_dockerhub(self, repo_url):
-        repo_url_list = repo_url.split('/')
-        if len(repo_url_list) <= 2:
-            return True
-        else:
-            return False
-
-    def _build_url_of_dockerhub(self, image_tag_dict, repo_uri):
-        uri = repo_uri
-        repo_url_list = repo_uri.split('/')
-        if len(repo_url_list) == 1:
-            uri = 'library' + '/' + repo_uri
-        url = 'https://hub.docker.com/v2/repositories/{uri}/tags/{tag}'.format(uri=uri, tag=image_tag_dict.get('tag'))
-        return url
-
-    def _has_multiarch_image(self, url):
-        has_arch_arm = False
-        r = requests.get(url)
-        if r.status_code == requests.codes.ok:
-            data = r.json()
-            for v in data.get('images', []):
-                if v.get('architecture').startswith('arm'):
-                    has_arch_arm = True
-        return has_arch_arm
-
-    def _get_indent_info(self, lines):
-        il = IndentList()
-        for line in lines:
-            il.add_with_line_of_text(line)
-        return il.to_list(), il.get_unit_indent_length()
-
-
-class FilterOfNodeSelector(object):
-    def __init__(self, indent_unit):
-        self.indent_unit = indent_unit
-        self.node_selector_indent = 0
-        self.is_ns_in_processing = False
-        self.original_nodeSelector_text = ''
-
-    def filter(self, line, indent, is_multi_arch=False):
-        if not self.is_ns_in_processing:
-            if self._is_start_of_block_element(line, indent):
-                return ''
-            else:
-                return line
-        else:
-            return self._processing_of_block_elements(line, is_multi_arch)
-
-    def is_processing(self):
-        return self.is_ns_in_processing
-
-    def _is_start_of_block_element(self, line, indent):
-        if re.match(r'^\s*nodeSelector:', line):
-            self.is_ns_in_processing = True
-            self.original_nodeSelector_text += line
-            self.node_selector_indent = indent
-            return True
-        return False
-
-    def _processing_of_block_elements(self, line, is_multi_arch=False):
-        file_text = ''
-        if line == '\n' or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
-            print(self.original_nodeSelector_text)
-            ns_obj = yaml.safe_load(self.original_nodeSelector_text)
-            if not isinstance(ns_obj.get('nodeSelector'), dict):
-                ns_obj = {'nodeSelector': {}}
-            ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
-            if not is_multi_arch:
-                ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
-            aligned_nodeSelector_text = yaml.dump(ns_obj, indent=self.indent_unit)
-            for text in aligned_nodeSelector_text.split('\n'):
-                file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
-            self._reset()
-        else:
-            self.original_nodeSelector_text += line
-        return file_text
-
-    def _reset(self):
-        self.is_ns_in_processing = False
-        self.original_nodeSelector_text = ''
-
-
-class Structure(object):
-    def __init__(self, indent_unit):
-        self.struct = ['_']
-        self.indent_unit = indent_unit
-        self.prev_indent = 0
-        self.prev_line_without_comment = ''
-
-    def update(self, line, now_indent):
-        if now_indent >= 0:
-            if now_indent > self.prev_indent:
-                if self.prev_line_without_comment.strip().endswith(':'):
-                    self.struct.append(self.prev_line_without_comment.strip().rstrip(':'))
-            if now_indent < self.prev_indent:
-                _unit = (self.prev_indent - now_indent) / self.indent_unit
-                if _unit.is_integer():
-                    for i in range(int(_unit)):
-                        if len(self.struct) > 1:
-                            self.struct.pop()
-            self.prev_line_without_comment = line
-            self.prev_indent = now_indent
-        return self.to_str()
-
-    def to_str(self, sep='.'):
-        return sep.join(self.struct)
-
-
-class IndentList(object):
-    def __init__(self):
-        self.result_indent_list = []
-        # Filter #
-        self.filters = []
-        self.filters.append(FilterOfBlockElementForIndentList(r'^\s*[0-9a-zA-Z\-]{1,}: (\>|\|)(\-|\+|)'))  # Multi Line Element
-        self.filters.append(FilterOfBlockElementForIndentList(r'^\s*-'))                                   # List Element
-
-    def append(self, indent):
-        self.result_indent_list.append(indent)
-
-    def to_list(self):
-        return self.result_indent_list
-
-    def add_with_line_of_text(self, line):
-        # Validation #
-        if re.match(r'^\s*#', line) or re.match(r'^\s*\n', line):
-            self.append(-1)
-            return
-        # RAW Indent #
-        indent_length_of_processing_line = self._get_indent_length_of_target(line)
-        # Filter #
-        for filter in self.filters:
-            if filter.is_filterd(line, indent_length_of_processing_line):
-                self.append(-1)
-                return
-        self.append(indent_length_of_processing_line)
-
-    def get_unit_indent_length(self):
-        unit = 0
-        for indent in self.result_indent_list:
-            if indent == -1:
-                continue
-            if indent > 0:
-                unit = indent
-                break
-        return unit
-
-    def _get_indent_length_of_target(self, line):
-        indent_length = 0
-        head_str = re.split(r'[0-9a-zA-Z\-\"\']{1,}', line)
-        if head_str[0].startswith(' '):
-            indent_length = len(head_str[0])
-        else:
-            indent_length = 0
-        return indent_length
-
-
-class FilterOfBlockElementForIndentList(object):
-    def __init__(self, regex):
-        self.regex = regex
-        self.is_block_of_yaml_in_processing = False
-        self.indent_length_of_block_of_yaml = -1
-
-    def is_filterd(self, line, indent_length_of_processing_line):
-        if not self.is_block_of_yaml_in_processing:
-            if self._is_start_of_block_element(line, indent_length_of_processing_line):
-                return True
-        return self._processing_of_block_elements(indent_length_of_processing_line)
-
-    def _is_start_of_block_element(self, line, indent_length_of_processing_line):
-        if re.match(self.regex, line):
-            self.is_block_of_yaml_in_processing = True
-            if self.indent_length_of_block_of_yaml == -1:
-                self.indent_length_of_block_of_yaml = indent_length_of_processing_line
-            return True
-        return False
-
-    def _processing_of_block_elements(self, indent_length_of_processing_line):
-        if self.is_block_of_yaml_in_processing and indent_length_of_processing_line >= 0:
-            if indent_length_of_processing_line > self.indent_length_of_block_of_yaml:
-                # countinue
-                return True
-            else:
-                # end
-                self._reset()
-                return False
-        return False
-
-    def _reset(self):
-        self.is_block_of_yaml_in_processing = False
-        self.indent_length_of_list_of_yaml = -1
 
 
 class ReadmeMd(object):
@@ -850,7 +675,7 @@ class ReadmeMd(object):
                 try:
                     l_XXX_i = [i for i, line in enumerate(file.readlines()) if 'eprecat' in line or 'EPRECAT' in line]
                     if len(l_XXX_i) > 0:
-                        if l_XXX_i[0] < 7:
+                        if l_XXX_i[0] < 10:
                             return True
                     return False
                 except Exception as e:
