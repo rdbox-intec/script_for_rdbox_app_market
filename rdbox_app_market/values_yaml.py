@@ -69,10 +69,16 @@ class ValuesYaml(object):
         structure = Structure(indent_unit)
         fileter_of_nodeSelector = FilterOfNodeSelector(indent_unit)
         for i, line in enumerate(lines):
+            if re.match(r'^\s*#*\s*storageClass:', line):
+                print("    ------------------------")
+                print("    " + lines[i - 2].rstrip('\n'))
+                print("    " + lines[i - 1].rstrip('\n'))
+                print("    " + line.rstrip('\n'))
+                print("    " + lines[i + 1].rstrip('\n'))
+                print("    " + lines[i + 2].rstrip('\n'))
             now_indent = indent_list[i]
             now_struct_str = structure.update(line, now_indent)
             if fileter_of_nodeSelector.is_processing():
-                print(now_struct_str)
                 is_multi_arch = now_struct_str in multi_arch_dict
                 file_text += fileter_of_nodeSelector.filter(line, now_indent, is_multi_arch)
             else:
@@ -80,6 +86,80 @@ class ValuesYaml(object):
         with open(self.full_path, 'w') as file:
             file.write(file_text)
         return multi_arch_dict
+
+    def specify_storageClass_for_rdbox(self):
+        file_text = ''
+        lines = []
+        with open(self.full_path) as file:
+            lines = file.readlines()
+        if not self.__has_storageClass_tag_with_lines(lines):
+            return
+        indent_list, indent_unit = self._get_indent_info(lines)
+        not_find_storageClass_in_global = False
+        if self.__has_global_tag_with_lines(lines):
+            # Batch setting
+            file_text = ''
+            is_indent_of_global = False
+            global_tag = ''
+            text_in_globa_tag = ''
+            for line in lines:
+                if re.match(r'^#\sglobal:', line) or re.match(r'^global:', line):
+                    global_tag = line
+                    is_indent_of_global = True
+                else:
+                    if is_indent_of_global:
+                        if re.match(r'^\s*#*\s*storageClass:', line):
+                            text_in_globa_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
+                            text_in_globa_tag = 'global:\n' + text_in_globa_tag
+                            is_indent_of_global = False
+                            file_text += text_in_globa_tag
+                            continue
+                        if re.match(r'^\s*\n', line) or re.match(r'^[0-9a-zA-Z]*:', line):
+                            text_in_globa_tag = global_tag + text_in_globa_tag + line
+                            is_indent_of_global = False
+                            file_text += text_in_globa_tag
+                            not_find_storageClass_in_global = True
+                            continue
+                        text_in_globa_tag += line
+                    else:
+                        file_text += line
+        if self.__has_global_tag_with_lines(lines) is False or not_find_storageClass_in_global is True:
+            # Separate Setting
+            file_text = ''
+            for i, line in enumerate(lines):
+                if re.match(r'^\s*#*\s*storageClass:\s[\-\_\/\"\'a-zA-Z0-9]+', line):
+                    indent_of_backward = 0
+                    indent_of_forward = 0
+                    for i in reversed(range(i)):
+                        if indent_list[i] >= 0:
+                            indent_of_backward = i
+                            break
+                    for i in range(i, len(indent_list)):
+                        if indent_list[i] >= 0:
+                            indent_of_forward = i
+                            break
+                    if indent_of_backward == indent_of_forward:
+                        file_text = file_text + ' ' * indent_list[i] + 'storageClass: openebs-jiva-rdbox' + '\n'
+                    else:
+                        file_text += line
+                else:
+                    file_text += line
+        with open(self.full_path, 'w') as file:
+            file.write(file_text)
+
+    def __has_global_tag_with_lines(self, lines):
+        return self.__has_regex_tag_with_lines(lines, r'^#\sglobal:') or self.__has_regex_tag_with_lines(lines, r'^global:')
+
+    def __has_storageClass_tag_with_lines(self, lines):
+        return self.__has_regex_tag_with_lines(lines, r'^\s*#*\s*storageClass:')
+
+    def __has_regex_tag_with_lines(self, lines, regex):
+        result = False
+        for line in lines:
+            if re.match(regex, line):
+                result = True
+                break
+        return result
 
     def _get_multi_arch_dict(self, lines):
         multi_arch_dict = {}
@@ -158,7 +238,6 @@ class FilterOfNodeSelector(object):
     def _processing_of_block_elements(self, line, is_multi_arch=False):
         file_text = ''
         if line == '\n' or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
-            print(self.original_nodeSelector_text)
             ns_obj = yaml.safe_load(self.original_nodeSelector_text)
             if not isinstance(ns_obj.get('nodeSelector'), dict):
                 ns_obj = {'nodeSelector': {}}

@@ -1,5 +1,5 @@
 {
-  "python.pythonPath": ".venv/bin/python",
+  "python.pythonPath": "/Users/fukuta/workspace/GitHub/rdbox-intec/script_for_rdbox_app_market/.venv/bin/python",
   "python.testing.pytestArgs": [],
   "python.testing.pytestEnabled": true
 }

@@ -8,6 +8,8 @@ import re
 import urllib.request
 
 from pathlib import Path
+from multiprocessing import Pool
+from itertools import repeat
 
 from rdbox_app_market.util import Util
 from rdbox_app_market.helm import HelmCommand
@@ -254,9 +256,10 @@ class ChartInSpecificDir(object):
             list[str]: List of module names that failed to be converted.
         """
         invalid_key_list = []
-        for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
-            _invalids = self.__convert(repo_for_rdbox, module_name, helm_module)
-            invalid_key_list.extend(_invalids)
+        p = Pool(int(os.cpu_count() * 0.7))
+        result = p.starmap(self.convert_detail, zip(repeat(repo_for_rdbox), self.get_all_HelmModule_mapped_by_module_name().keys(), self.get_all_HelmModule_mapped_by_module_name().values()))
+        for invalids in result:
+            invalid_key_list.extend(invalids)
         for module_name in invalid_key_list:
             print('Delete(MISS_CONVERT): ' + module_name)
         self.remove_by_key_list(invalid_key_list)
@@ -274,7 +277,7 @@ class ChartInSpecificDir(object):
         invalid_key_list = []
         try:
             self.__pack(repo_for_rdbox)
-            self.__publish(repo_for_rdbox)
+            # self.__publish(repo_for_rdbox)
         except ChartInSpecificDirPackError as e:
             print("PackERR({msg})".find(str(e)))
             invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
@@ -291,7 +294,7 @@ class ChartInSpecificDir(object):
             module_name_list (list[str]): List of module names to be removed.
         """
         for key in list(set(module_name_list)):
-            self.__delete_entity_by_module_name(key)
+            #self.__delete_entity_by_module_name(key)
             self.all_HelmModule_mapped_by_module_name.pop(key)
 
     def remove_by_depend_modules_list(self, module_name_list: list[str]) -> None:
@@ -321,7 +324,7 @@ class ChartInSpecificDir(object):
                 module_mapping_data.setdefault(module_name, helm_module)
         return module_mapping_data
 
-    def __convert(self, repo_for_rdbox, module_name, helm_module):
+    def convert_detail(self, repo_for_rdbox, module_name, helm_module):
         invalid_key_list = []
         try:
             if self.get_annotation() == ChartInSpecificDir.ANNOTATION_ISOLATIONS:
@@ -340,9 +343,12 @@ class ChartInSpecificDir(object):
     def __convert_isolations(self, repo_for_rdbox, module_name, helm_module):
         multi_arch_dict = {}
         try:
+            helm_module.specify_storageClass_for_rdbox()
             multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
-        except Exception as e:
-            raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox: {0}'.format(e.message))
+        except Exception:
+            import traceback
+            print(traceback.format_exc())
+            raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox')
         ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
         os.makedirs(dir_to_save_icon, exist_ok=True)
@@ -364,9 +370,12 @@ class ChartInSpecificDir(object):
     def __convert_dependons(self, repo_for_rdbox, module_name, helm_module):
         multi_arch_dict = {}
         try:
+            helm_module.specify_storageClass_for_rdbox()
             multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
-        except Exception as e:
-            raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox: {0}'.format(e.message))
+        except Exception:
+            import traceback
+            print(traceback.format_exc())
+            raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox')
         ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
         os.makedirs(dir_to_save_icon, exist_ok=True)
@@ -614,6 +623,9 @@ class HelmModule(object):
 
     def specify_nodeSelector_for_rdbox(self):
         return self.get_ValuesYaml().specify_nodeSelector_for_rdbox()
+
+    def specify_storageClass_for_rdbox(self):
+        return self.get_ValuesYaml().specify_storageClass_for_rdbox()
 
     def is_contain_deprecate_string_at_head(self):
         return self.get_ReadmeMd().is_contain_deprecate_string_at_head()
