@@ -69,13 +69,6 @@ class ValuesYaml(object):
         structure = Structure(indent_unit)
         fileter_of_nodeSelector = FilterOfNodeSelector(indent_unit)
         for i, line in enumerate(lines):
-            if re.match(r'^\s*#*\s*storageClass:', line):
-                print("    ------------------------")
-                print("    " + lines[i - 2].rstrip('\n'))
-                print("    " + lines[i - 1].rstrip('\n'))
-                print("    " + line.rstrip('\n'))
-                print("    " + lines[i + 1].rstrip('\n'))
-                print("    " + lines[i + 2].rstrip('\n'))
             now_indent = indent_list[i]
             now_struct_str = structure.update(line, now_indent)
             if fileter_of_nodeSelector.is_processing():
@@ -212,24 +205,24 @@ class FilterOfNodeSelector(object):
     def __init__(self, indent_unit):
         self.indent_unit = indent_unit
         self.node_selector_indent = 0
-        self.is_ns_in_processing = False
+        self.is_nodeSelector_in_processing = False
         self.original_nodeSelector_text = ''
 
     def filter(self, line, indent, is_multi_arch=False):
-        if not self.is_ns_in_processing:
+        if self.is_nodeSelector_in_processing:
+            return self._processing_of_block_elements(line, is_multi_arch)
+        else:
             if self._is_start_of_block_element(line, indent):
                 return ''
             else:
                 return line
-        else:
-            return self._processing_of_block_elements(line, is_multi_arch)
 
     def is_processing(self):
-        return self.is_ns_in_processing
+        return self.is_nodeSelector_in_processing
 
     def _is_start_of_block_element(self, line, indent):
         if re.match(r'^\s*nodeSelector:', line):
-            self.is_ns_in_processing = True
+            self.is_nodeSelector_in_processing = True
             self.original_nodeSelector_text += line
             self.node_selector_indent = indent
             return True
@@ -237,7 +230,7 @@ class FilterOfNodeSelector(object):
 
     def _processing_of_block_elements(self, line, is_multi_arch=False):
         file_text = ''
-        if line == '\n' or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
+        if re.match(r'^\s*\n', line) or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
             ns_obj = yaml.safe_load(self.original_nodeSelector_text)
             if not isinstance(ns_obj.get('nodeSelector'), dict):
                 ns_obj = {'nodeSelector': {}}
@@ -253,7 +246,7 @@ class FilterOfNodeSelector(object):
         return file_text
 
     def _reset(self):
-        self.is_ns_in_processing = False
+        self.is_nodeSelector_in_processing = False
         self.original_nodeSelector_text = ''
 
 

@@ -294,7 +294,7 @@ class ChartInSpecificDir(object):
             module_name_list (list[str]): List of module names to be removed.
         """
         for key in list(set(module_name_list)):
-            #self.__delete_entity_by_module_name(key)
+            self.__delete_entity_by_module_name(key)
             self.all_HelmModule_mapped_by_module_name.pop(key)
 
     def remove_by_depend_modules_list(self, module_name_list: list[str]) -> None:
