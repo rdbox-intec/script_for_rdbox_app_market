@@ -294,7 +294,7 @@ class ChartInSpecificDir(object):
             module_name_list (list[str]): List of module names to be removed.
         """
         for key in list(set(module_name_list)):
-            self.__delete_entity_by_module_name(key)
+            # self.__delete_entity_by_module_name(key)
             self.all_HelmModule_mapped_by_module_name.pop(key)
 
     def remove_by_depend_modules_list(self, module_name_list: list[str]) -> None:
@@ -344,6 +344,7 @@ class ChartInSpecificDir(object):
         multi_arch_dict = {}
         try:
             helm_module.specify_storageClass_for_rdbox()
+            helm_module.specify_ingress_for_rdbox()
             multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
         except Exception:
             import traceback
@@ -371,6 +372,7 @@ class ChartInSpecificDir(object):
         multi_arch_dict = {}
         try:
             helm_module.specify_storageClass_for_rdbox()
+            helm_module.specify_ingress_for_rdbox()
             multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
         except Exception:
             import traceback
@@ -626,6 +628,9 @@ class HelmModule(object):
 
     def specify_storageClass_for_rdbox(self):
         return self.get_ValuesYaml().specify_storageClass_for_rdbox()
+
+    def specify_ingress_for_rdbox(self):
+        return self.get_ValuesYaml().specify_ingress_for_rdbox()
 
     def is_contain_deprecate_string_at_head(self):
         return self.get_ReadmeMd().is_contain_deprecate_string_at_head()
