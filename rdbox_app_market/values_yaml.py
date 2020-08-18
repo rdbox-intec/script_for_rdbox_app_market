@@ -85,60 +85,79 @@ class ValuesYaml(object):
         lines = []
         with open(self.full_path) as file:
             lines = file.readlines()
+        # Validation
         if not self.__has_storageClass_tag_with_lines(lines):
             return
-        indent_list, indent_unit = self._get_indent_info(lines)
-        not_find_storageClass_in_global = False
         if self.__has_global_tag_with_lines(lines):
             # global setting
-            file_text = ''
-            is_indent_of_global = False
-            global_tag = ''
-            text_in_global_tag = ''
-            for i, line in enumerate(lines):
-                if re.match(r'^#\sglobal:', line) or re.match(r'^global:', line):
-                    global_tag = line
-                    is_indent_of_global = True
-                else:
-                    if is_indent_of_global:
-                        if re.match(r'^\s*#*\s*storageClass:', line):
-                            text_in_global_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
-                            text_in_global_tag = 'global:\n' + text_in_global_tag
-                            is_indent_of_global = False
-                            file_text += text_in_global_tag
-                            continue
-                        if re.match(r'^\s*\n', line) or re.match(r'^[0-9a-zA-Z]*:', line):
-                            text_in_global_tag = global_tag + text_in_global_tag + line
-                            is_indent_of_global = False
-                            file_text += text_in_global_tag
-                            not_find_storageClass_in_global = True
-                            continue
-                        text_in_global_tag += line
-                    else:
-                        file_text += line
-        if self.__has_global_tag_with_lines(lines) is False or not_find_storageClass_in_global is True:
+            not_find_storageClass_in_global, file_text = self.__edit_storageClass_in_global_tag(lines)
+            if not_find_storageClass_in_global:
+                # If editing the global tag fails, edit the Separate Setting.
+                file_text = self.__edit_storageClass_of_the_separate(lines)
+        else:
             # Separate Setting
-            file_text = ''
-            for i, line in enumerate(lines):
-                if re.match(r'^\s*#*\s*storageClass:\s[\-\_\/\"\'a-zA-Z0-9]+', line):
-                    indent_of_backward = 0
-                    indent_of_forward = 0
-                    for i in reversed(range(i)):
-                        if indent_list[i] >= 0:
-                            indent_of_backward = i
-                            break
-                    for i in range(i, len(indent_list)):
-                        if indent_list[i] >= 0:
-                            indent_of_forward = i
-                            break
-                    if indent_of_backward == indent_of_forward:
-                        file_text = file_text + ' ' * indent_list[i] + 'storageClass: openebs-jiva-rdbox' + '\n'
-                    else:
-                        file_text += line
-                else:
-                    file_text += line
+            file_text = self.__edit_storageClass_of_the_separate(lines)
         with open(self.full_path, 'w') as file:
             file.write(file_text)
+
+    def __edit_storageClass_in_global_tag(self, lines):
+        file_text = ''
+        not_find_storageClass_in_global = False
+        _, indent_unit = self._get_indent_info(lines)
+        is_indent_of_global = False
+        global_tag = ''
+        text_in_global_tag = ''
+        for i, line in enumerate(lines):
+            if re.match(r'^#\sglobal:', line) or re.match(r'^global:', line):
+                global_tag = line
+                is_indent_of_global = True
+            else:
+                if is_indent_of_global:
+                    if re.match(r'^\s*#*\s*storageClass:', line):
+                        # find in global tag.
+                        text_in_global_tag = 'global:\n' + text_in_global_tag
+                        text_in_global_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
+                        is_indent_of_global = False
+                        file_text += text_in_global_tag
+                        continue
+                    if re.match(r'^\s*\n', line) or re.match(r'^[0-9a-zA-Z]*:', line):
+                        # not find in global tag.
+                        text_in_global_tag = global_tag + text_in_global_tag + line
+                        is_indent_of_global = False
+                        file_text += text_in_global_tag
+                        not_find_storageClass_in_global = True
+                        continue
+                    text_in_global_tag += line
+                else:
+                    file_text += line
+        return not_find_storageClass_in_global, file_text
+
+    def __edit_storageClass_of_the_separate(self, lines):
+        indent_list, _ = self._get_indent_info(lines)
+        file_text = ''
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*#*\s*storageClass:\s[\-\_\/\"\'a-zA-Z0-9]+', line):
+                indent_of_backward, indent_of_forward = self.__get_indent_of_back_and_forward(indent_list, i)
+                if indent_of_backward == indent_of_forward:
+                    file_text = file_text + ' ' * indent_of_backward + 'storageClass: openebs-jiva-rdbox' + '\n'
+                else:
+                    file_text += line
+            else:
+                file_text += line
+        return file_text
+
+    def __get_indent_of_back_and_forward(self, indent_list, now_processing_line):
+        indent_of_backward = 0
+        indent_of_forward = 0
+        for i in reversed(range(now_processing_line)):
+            if indent_list[i] >= 0:
+                indent_of_backward = indent_list[i]
+                break
+        for i in range(now_processing_line, len(indent_list)):
+            if indent_list[i] >= 0:
+                indent_of_forward = indent_list[i]
+                break
+        return indent_of_backward, indent_of_forward
 
     def specify_ingress_for_rdbox(self):
         file_text = ''
