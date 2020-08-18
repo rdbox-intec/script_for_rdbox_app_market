@@ -90,30 +90,30 @@ class ValuesYaml(object):
         indent_list, indent_unit = self._get_indent_info(lines)
         not_find_storageClass_in_global = False
         if self.__has_global_tag_with_lines(lines):
-            # Batch setting
+            # global setting
             file_text = ''
             is_indent_of_global = False
             global_tag = ''
-            text_in_globa_tag = ''
-            for line in lines:
+            text_in_global_tag = ''
+            for i, line in enumerate(lines):
                 if re.match(r'^#\sglobal:', line) or re.match(r'^global:', line):
                     global_tag = line
                     is_indent_of_global = True
                 else:
                     if is_indent_of_global:
                         if re.match(r'^\s*#*\s*storageClass:', line):
-                            text_in_globa_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
-                            text_in_globa_tag = 'global:\n' + text_in_globa_tag
+                            text_in_global_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
+                            text_in_global_tag = 'global:\n' + text_in_global_tag
                             is_indent_of_global = False
-                            file_text += text_in_globa_tag
+                            file_text += text_in_global_tag
                             continue
                         if re.match(r'^\s*\n', line) or re.match(r'^[0-9a-zA-Z]*:', line):
-                            text_in_globa_tag = global_tag + text_in_globa_tag + line
+                            text_in_global_tag = global_tag + text_in_global_tag + line
                             is_indent_of_global = False
-                            file_text += text_in_globa_tag
+                            file_text += text_in_global_tag
                             not_find_storageClass_in_global = True
                             continue
-                        text_in_globa_tag += line
+                        text_in_global_tag += line
                     else:
                         file_text += line
         if self.__has_global_tag_with_lines(lines) is False or not_find_storageClass_in_global is True:
@@ -154,20 +154,20 @@ class ValuesYaml(object):
         if not self.__has_key_of_hosts(ingress_dict):
             return
         ##
+        indent_list, indent_unit = self._get_indent_info(lines)
+        ##
         if self.__has_str_key_of_hosts(ingress_dict):
             if not self.__passed_str_hosts_ingress(ingress_dict):
                 return
-            indent_list, indent_unit = self._get_indent_info(lines)
             structure = Structure(indent_unit)
             is_skip_next = False
-            is_uncomment = False
+            need_to_uncomment_q = False
             count_uncomment = 0
             indent_uncomment = 0
-            print('   -hosts str-  ' + self.module_name)
             for i, line in enumerate(lines):
                 now_indent = indent_list[i]
                 now_struct_str = structure.update(line, now_indent)
-                hostname = self.module_name
+                hostname = self.module_name + '.rdbox.lan'
                 if '.ingress' in now_struct_str:
                     if is_skip_next:
                         if re.match(r'^\s*#+', line):
@@ -177,10 +177,10 @@ class ValuesYaml(object):
                         else:
                             is_skip_next = False
                             continue
-                    if is_uncomment:
+                    if need_to_uncomment_q:
                         if re.match(r'^\s*#+', line):
                             if re.match(r'^\s*#+\s*[\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+', line):
-                                file_text += line.replace('# ', '')
+                                file_text += indent_uncomment + re.sub(r'^\s*#+\s*([\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+)', r'\1', line)
                                 count_uncomment += 1
                                 continue
                         else:
@@ -188,7 +188,7 @@ class ValuesYaml(object):
                                 file_text += indent_uncomment + 'kubernetes.io/ingress.class: nginx' + '\n'
                                 file_text += indent_uncomment + 'kubernetes.io/tls-acme: \'true\'' + '\n'
                             count_uncomment = 0
-                            is_uncomment = False
+                            need_to_uncomment_q = False
                     if re.match(r'^\s*enabled:', line):
                         file_text = file_text + ' ' * now_indent + 'enabled: true' + '\n'
                         continue
@@ -198,7 +198,7 @@ class ValuesYaml(object):
                             hostname = self.module_name + '.rdbox.lan'
                         else:
                             hostname = hostname + '.' + self.module_name + '.rdbox.lan'
-                        hosts_item = ingress_dict.get('.'.join(structure.parent())).get('hosts')
+                        hosts_item = ingress_dict.get('.'.join(structure.parent())).get('hosts', None)
                         if hosts_item is None:
                             file_text += line
                             file_text = file_text + ' ' * now_indent + ' ' * indent_unit + '- ' + hostname + '\n'
@@ -213,16 +213,16 @@ class ValuesYaml(object):
                             is_skip_next = True
                             continue
                     if re.match(r'^\s*tls:', line):
-                        tls_item = ingress_dict.get('.'.join(structure.parent())).get('tls')
+                        tls_item = ingress_dict.get('.'.join(structure.parent())).get('tls', None)
                         if tls_item is None:
                             file_text += line
-                            content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['*.rdbox.lan']}], indent=indent_unit)
+                            content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=indent_unit)
                             for text in content.split('\n'):
                                 file_text = file_text + ' ' * now_indent + ' ' * indent_unit + text + '\n'
                             continue
                         if len(tls_item) == 0:
                             file_text = file_text + ' ' * now_indent + 'tls:' + '\n'
-                            content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['*.rdbox.lan']}], indent=indent_unit)
+                            content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=indent_unit)
                             for text in content.split('\n'):
                                 file_text = file_text + ' ' * now_indent + ' ' * indent_unit + text + '\n'
                             continue
@@ -230,17 +230,23 @@ class ValuesYaml(object):
                             file_text += line
                             continue
                     if re.match(r'^\s*#*\s*annotations:', line):
-                        is_uncomment = True
-                        indent_uncomment = ' ' * now_indent + ' ' * indent_unit
-                        annotations_item = ingress_dict.get('.'.join(structure.parent())).get('annotations')
+                        need_to_uncomment_q = True
+                        target_line = line
+                        if now_indent < 0:
+                            _indent_unit_from_struct = len(now_struct_str.split('.')) - 1
+                            indent_uncomment = ' ' * _indent_unit_from_struct * indent_unit + ' ' * indent_unit
+                            target_line = ' ' * _indent_unit_from_struct * indent_unit + 'annotations:' + '\n'
+                        else:
+                            indent_uncomment = ' ' * now_indent + ' ' * indent_unit
+                        annotations_item = ingress_dict.get('.'.join(structure.parent())).get('annotations', None)
                         if annotations_item is None:
-                            file_text += line
+                            file_text += target_line
                             continue
                         if len(annotations_item) == 0:
                             file_text = file_text + ' ' * now_indent + 'annotations:' + '\n'
                             continue
                         elif len(annotations_item) > 0:
-                            file_text += line
+                            file_text += target_line
                             continue
                     file_text += line
                 else:
@@ -248,10 +254,94 @@ class ValuesYaml(object):
         elif self.__has_dict_key_of_hosts(ingress_dict):
             if not self.__passed_dict_hosts_ingress(ingress_dict):
                 return
-            indent_list, indent_unit = self._get_indent_info(lines)
             structure = Structure(indent_unit)
+            is_skip_next = False
+            need_to_uncomment_q = False
+            count_uncomment = 0
+            indent_uncomment = 0
             for i, line in enumerate(lines):
-                file_text += line
+                now_indent = indent_list[i]
+                now_struct_str = structure.update(line, now_indent)
+                hostname = self.module_name + '.rdbox.lan'
+                if '.ingress' in now_struct_str:
+                    # section of .ingress
+                    if is_skip_next:
+                        if re.match(r'^\s*#+', line):
+                            file_text += line
+                            is_skip_next = True
+                            continue
+                        else:
+                            is_skip_next = False
+                            continue
+                    if need_to_uncomment_q:
+                        if re.match(r'^\s*#+', line):
+                            if re.match(r'^\s*#+\s*[\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+', line):
+                                file_text += indent_uncomment + re.sub(r'^\s*#+\s*([\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+)', r'\1', line)
+                                count_uncomment += 1
+                                continue
+                        else:
+                            if count_uncomment == 0:
+                                file_text += indent_uncomment + 'kubernetes.io/ingress.class: nginx' + '\n'
+                                file_text += indent_uncomment + 'kubernetes.io/tls-acme: \'true\'' + '\n'
+                            count_uncomment = 0
+                            need_to_uncomment_q = False
+                    if re.match(r'^\s*enabled:', line):
+                        file_text = file_text + ' ' * now_indent + 'enabled: true' + '\n'
+                        continue
+                    if re.match(r'^\s*certManager:', line):
+                        file_text = file_text + ' ' * now_indent + 'certManager: true' + '\n'
+                        continue
+                    if re.match(r'^\s*#*\s*annotations:', line):
+                        need_to_uncomment_q = True
+                        target_line = line
+                        if now_indent < 0:
+                            _indent_unit_from_struct = len(now_struct_str.split('.')) - 1
+                            indent_uncomment = ' ' * _indent_unit_from_struct * indent_unit + ' ' * indent_unit
+                            target_line = ' ' * _indent_unit_from_struct * indent_unit + 'annotations:' + '\n'
+                        else:
+                            indent_uncomment = ' ' * now_indent + ' ' * indent_unit
+                        annotations_item = ingress_dict.get('.'.join(structure.parent())).get('annotations', None)
+                        if annotations_item is None:
+                            file_text += target_line
+                            continue
+                        if len(annotations_item) == 0:
+                            file_text = file_text + ' ' * now_indent + 'annotations:' + '\n'
+                            continue
+                        elif len(annotations_item) > 0:
+                            file_text += target_line
+                            continue
+                    # section of .ingress.hosts
+                    if re.match(r'^\s*-*\s*tls:', line):
+                        file_text += re.sub(r'(^\s*-*\s*)(tls:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tls: true' + '\n'
+                        continue
+                    if re.match(r'^\s*-*\s*name:', line):
+                        hostname = '.'.join(structure.get_struct()[1:-1])
+                        if hostname == '':
+                            hostname = self.module_name + '.rdbox.lan'
+                        else:
+                            hostname = hostname + '.' + self.module_name + '.rdbox.lan'
+                        file_text += re.sub(r'(^\s*-*\s*)(name:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'name: ' + hostname + '\n'
+                        continue
+                    if re.match(r'^\s*-*\s*tlsSecret:', line):
+                        file_text += re.sub(r'(^\s*-*\s*)(tlsSecret:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsSecret: rdbox-common-tls' + '\n'
+                        continue
+                    if re.match(r'^\s*#*-*\s*tlsHosts:', line):
+                        hosts_item = ingress_dict.get('.'.join(structure.parent())).get('hosts', [{}])[0].get('tlsHosts', None)
+                        if hosts_item is None:
+                            file_text += line
+                            continue
+                        if len(hosts_item) == 0:
+                            file_text += re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsHosts:' + '\n'
+                            file_text += re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * indent_unit + '- ' + '"*.rdbox.lan"' + '\n'
+                            continue
+                        elif len(hosts_item) > 0:
+                            file_text += line
+                            file_text += re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * indent_unit + '- ' + '"*.rdbox.lan"' + '\n'
+                            is_skip_next = True
+                            continue
+                    file_text += line
+                else:
+                    file_text += line
         else:
             return
         with open(self.full_path, 'w') as file:
