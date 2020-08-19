@@ -3,6 +3,7 @@ import os
 import requests
 import yaml
 import re
+from typing import Dict, List, Tuple
 
 from rdbox_app_market.util import Util
 
@@ -64,8 +65,8 @@ class ValuesYaml(object):
         lines = []
         with open(self.full_path) as file:
             lines = file.readlines()
-        multi_arch_dict = self._get_multi_arch_dict(lines)
-        indent_list, indent_unit = self._get_indent_info(lines)
+        multi_arch_dict = self.__get_multi_arch_dict(lines)
+        indent_list, indent_unit = self.__get_indent_info(lines)
         structure = Structure(indent_unit)
         fileter_of_nodeSelector = FilterOfNodeSelector(indent_unit)
         for i, line in enumerate(lines):
@@ -85,45 +86,141 @@ class ValuesYaml(object):
         lines = []
         with open(self.full_path) as file:
             lines = file.readlines()
-        # Validation
-        if not self.__has_storageClass_tag_with_lines(lines):
-            return
-        if self.__has_global_tag_with_lines(lines):
-            # global setting
-            not_find_storageClass_in_global, file_text = self.__edit_storageClass_in_global_tag(lines)
-            if not_find_storageClass_in_global:
-                # If editing the global tag fails, edit the Separate Setting.
-                file_text = self.__edit_storageClass_of_the_separate(lines)
+        flt = FilterOfStorageClass(self.module_name, lines)
+        file_text, is_changed = flt.filter()
+        if is_changed:
+            with open(self.full_path, 'w') as file:
+                file.write(file_text)
+
+    def specify_ingress_for_rdbox(self):
+        lines = []
+        with open(self.full_path) as file:
+            lines = file.readlines()
+        flt = FilterOfIngress(self.module_name, lines)
+        lines, is_changed = flt.filter()
+        if is_changed:
+            with open(self.full_path, 'w') as file:
+                file.write(''.join(lines))
+
+    def __get_multi_arch_dict(self, lines: List[str]) -> Dict[str, str]:
+        """Get a dict of images that support multi-architectures.
+
+        The dockerhub allows you to get the architecture of the image with a REST API.
+
+        Args:
+            lines (List[str]): A list of values.yaml divided by a new line
+
+        Returns:
+            Dict[str, str]: key is Dot-separated characters indicate a layer. value is URI of a repository on the dockerhub.
+        """
+        multi_arch_dict = {}
+        obj_values = yaml.safe_load('\n'.join(lines))
+        node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
+        image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
+        if len(node_selector_list) == len(image_list):
+            all_image_list = Util.has_key_recursion_full(obj_values, 'image')
+            for struct, image_dict in all_image_list.items():
+                repo_uri = image_dict.get('repository', image_dict.get('name', ''))
+                if self.__is_hosted_on_dockerhub(repo_uri):
+                    url = self.__build_url_of_dockerhub(image_dict, repo_uri)
+                    if self.__has_multiarch_image(url):
+                        multi_arch_dict.setdefault(struct, repo_uri)
+        return multi_arch_dict
+
+    def __is_hosted_on_dockerhub(self, repo_url):
+        repo_url_list = repo_url.split('/')
+        if len(repo_url_list) <= 2:
+            return True
         else:
-            # Separate Setting
-            file_text = self.__edit_storageClass_of_the_separate(lines)
-        with open(self.full_path, 'w') as file:
-            file.write(file_text)
+            return False
+
+    def __build_url_of_dockerhub(self, image_tag_dict, repo_uri):
+        uri = repo_uri
+        repo_url_list = repo_uri.split('/')
+        if len(repo_url_list) == 1:
+            uri = 'library' + '/' + repo_uri
+        url = 'https://hub.docker.com/v2/repositories/{uri}/tags/{tag}'.format(uri=uri, tag=image_tag_dict.get('tag'))
+        return url
+
+    def __has_multiarch_image(self, url):
+        has_arch_arm = False
+        r = requests.get(url)
+        if r.status_code == requests.codes.ok:
+            data = r.json()
+            for v in data.get('images', []):
+                if v.get('architecture').startswith('arm'):
+                    has_arch_arm = True
+        return has_arch_arm
+
+    def __get_indent_info(self, lines):
+        il = IndentList()
+        for line in lines:
+            il.add_with_line_of_text(line)
+        return il.to_list(), il.get_unit_indent_length()
+
+
+class FilterOfStorageClass(object):
+    def __init__(self, module_name: str, lines: List[str]):
+        """Filter of ingress
+
+        Args:
+            module_name (str): module name
+            lines (list): A list of values.yaml divided by a new line
+        """
+        self.module_name = module_name
+        self.lines = lines
+
+    def filter(self):
+        file_text = ''
+        try:
+            # Validation #
+            if not self.__has_storageClass_tag_with_lines(self.lines):
+                return ''.join(self.lines), False
+            if self.__has_global_tag_with_lines(self.lines):
+                # global setting
+                not_find_storageClass_in_global, file_text = self.__edit_storageClass_in_global_tag(self.lines)
+                if not_find_storageClass_in_global:
+                    # If editing the global tag fails, edit the Separate Setting.
+                    file_text = self.__edit_storageClass_of_the_separate(self.lines)
+            else:
+                # Separate Setting
+                file_text = self.__edit_storageClass_of_the_separate(self.lines)
+            return file_text, True
+        except Exception:
+            import traceback
+            print(traceback.format_exc())
+            return ''.join(self.lines), False
+
+    def __has_global_tag_with_lines(self, lines):
+        return self.__has_regex_tag_with_lines(lines, r'^#\sglobal:') or self.__has_regex_tag_with_lines(lines, r'^global:')
+
+    def __has_storageClass_tag_with_lines(self, lines):
+        return self.__has_regex_tag_with_lines(lines, r'^\s*#*\s*storageClass:')
 
     def __edit_storageClass_in_global_tag(self, lines):
         file_text = ''
         not_find_storageClass_in_global = False
-        _, indent_unit = self._get_indent_info(lines)
-        is_indent_of_global = False
-        global_tag = ''
+        _, indent_unit = self.__get_indent_info(lines)
+        is_indent_of_global_tag = False
+        raw_global_tag = ''     # ex. global: or # global:
         text_in_global_tag = ''
         for i, line in enumerate(lines):
             if re.match(r'^#\sglobal:', line) or re.match(r'^global:', line):
-                global_tag = line
-                is_indent_of_global = True
+                raw_global_tag = line
+                is_indent_of_global_tag = True
             else:
-                if is_indent_of_global:
+                if is_indent_of_global_tag:
                     if re.match(r'^\s*#*\s*storageClass:', line):
                         # find in global tag.
                         text_in_global_tag = 'global:\n' + text_in_global_tag
                         text_in_global_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
-                        is_indent_of_global = False
+                        is_indent_of_global_tag = False
                         file_text += text_in_global_tag
                         continue
                     if re.match(r'^\s*\n', line) or re.match(r'^[0-9a-zA-Z]*:', line):
                         # not find in global tag.
-                        text_in_global_tag = global_tag + text_in_global_tag + line
-                        is_indent_of_global = False
+                        text_in_global_tag = raw_global_tag + text_in_global_tag + line
+                        is_indent_of_global_tag = False
                         file_text += text_in_global_tag
                         not_find_storageClass_in_global = True
                         continue
@@ -133,7 +230,7 @@ class ValuesYaml(object):
         return not_find_storageClass_in_global, file_text
 
     def __edit_storageClass_of_the_separate(self, lines):
-        indent_list, _ = self._get_indent_info(lines)
+        indent_list, _ = self.__get_indent_info(lines)
         file_text = ''
         for i, line in enumerate(lines):
             if re.match(r'^\s*#*\s*storageClass:\s[\-\_\/\"\'a-zA-Z0-9]+', line):
@@ -159,212 +256,114 @@ class ValuesYaml(object):
                 break
         return indent_of_backward, indent_of_forward
 
-    def specify_ingress_for_rdbox(self):
-        file_text = ''
-        lines = []
-        with open(self.full_path) as file:
-            lines = file.readlines()
-        obj_values = yaml.safe_load('\n'.join(lines))
-        ingress_dict = Util.has_key_recursion_full(obj_values, 'ingress')
-        ##
-        if len(ingress_dict.keys()) == 0:
-            return
-        ##
-        if not self.__has_key_of_hosts(ingress_dict):
-            return
-        ##
-        indent_list, indent_unit = self._get_indent_info(lines)
-        ##
-        if self.__has_str_key_of_hosts(ingress_dict):
-            if not self.__passed_str_hosts_ingress(ingress_dict):
-                return
-            structure = Structure(indent_unit)
-            is_skip_next = False
-            need_to_uncomment_q = False
-            count_uncomment = 0
-            indent_uncomment = 0
-            for i, line in enumerate(lines):
-                now_indent = indent_list[i]
-                now_struct_str = structure.update(line, now_indent)
-                hostname = self.module_name + '.rdbox.lan'
-                if '.ingress' in now_struct_str:
-                    if is_skip_next:
-                        if re.match(r'^\s*#+', line):
-                            file_text += line
-                            is_skip_next = True
-                            continue
-                        else:
-                            is_skip_next = False
-                            continue
-                    if need_to_uncomment_q:
-                        if re.match(r'^\s*#+', line):
-                            if re.match(r'^\s*#+\s*[\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+', line):
-                                file_text += indent_uncomment + re.sub(r'^\s*#+\s*([\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+)', r'\1', line)
-                                count_uncomment += 1
-                                continue
-                        else:
-                            if count_uncomment == 0:
-                                file_text += indent_uncomment + 'kubernetes.io/ingress.class: nginx' + '\n'
-                                file_text += indent_uncomment + 'kubernetes.io/tls-acme: \'true\'' + '\n'
-                            count_uncomment = 0
-                            need_to_uncomment_q = False
-                    if re.match(r'^\s*enabled:', line):
-                        file_text = file_text + ' ' * now_indent + 'enabled: true' + '\n'
-                        continue
-                    if re.match(r'^\s*hosts:', line):
-                        hostname = '.'.join(structure.get_struct()[1:-1])
-                        if hostname == '':
-                            hostname = self.module_name + '.rdbox.lan'
-                        else:
-                            hostname = hostname + '.' + self.module_name + '.rdbox.lan'
-                        hosts_item = ingress_dict.get('.'.join(structure.parent())).get('hosts', None)
-                        if hosts_item is None:
-                            file_text += line
-                            file_text = file_text + ' ' * now_indent + ' ' * indent_unit + '- ' + hostname + '\n'
-                            continue
-                        if len(hosts_item) == 0:
-                            file_text = file_text + ' ' * now_indent + 'hosts:' + '\n'
-                            file_text = file_text + ' ' * now_indent + ' ' * indent_unit + '- ' + hostname + '\n'
-                            continue
-                        elif len(hosts_item) > 0:
-                            file_text += line
-                            file_text = file_text + ' ' * now_indent + ' ' * indent_unit + '- ' + hostname + '\n'
-                            is_skip_next = True
-                            continue
-                    if re.match(r'^\s*tls:', line):
-                        tls_item = ingress_dict.get('.'.join(structure.parent())).get('tls', None)
-                        if tls_item is None:
-                            file_text += line
-                            content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=indent_unit)
-                            for text in content.split('\n'):
-                                file_text = file_text + ' ' * now_indent + ' ' * indent_unit + text + '\n'
-                            continue
-                        if len(tls_item) == 0:
-                            file_text = file_text + ' ' * now_indent + 'tls:' + '\n'
-                            content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=indent_unit)
-                            for text in content.split('\n'):
-                                file_text = file_text + ' ' * now_indent + ' ' * indent_unit + text + '\n'
-                            continue
-                        elif len(tls_item) > 0:
-                            file_text += line
-                            continue
-                    if re.match(r'^\s*#*\s*annotations:', line):
-                        need_to_uncomment_q = True
-                        target_line = line
-                        if now_indent < 0:
-                            _indent_unit_from_struct = len(now_struct_str.split('.')) - 1
-                            indent_uncomment = ' ' * _indent_unit_from_struct * indent_unit + ' ' * indent_unit
-                            target_line = ' ' * _indent_unit_from_struct * indent_unit + 'annotations:' + '\n'
-                        else:
-                            indent_uncomment = ' ' * now_indent + ' ' * indent_unit
-                        annotations_item = ingress_dict.get('.'.join(structure.parent())).get('annotations', None)
-                        if annotations_item is None:
-                            file_text += target_line
-                            continue
-                        if len(annotations_item) == 0:
-                            file_text = file_text + ' ' * now_indent + 'annotations:' + '\n'
-                            continue
-                        elif len(annotations_item) > 0:
-                            file_text += target_line
-                            continue
-                    file_text += line
-                else:
-                    file_text += line
-        elif self.__has_dict_key_of_hosts(ingress_dict):
-            if not self.__passed_dict_hosts_ingress(ingress_dict):
-                return
-            structure = Structure(indent_unit)
-            is_skip_next = False
-            need_to_uncomment_q = False
-            count_uncomment = 0
-            indent_uncomment = 0
-            for i, line in enumerate(lines):
-                now_indent = indent_list[i]
-                now_struct_str = structure.update(line, now_indent)
-                hostname = self.module_name + '.rdbox.lan'
-                if '.ingress' in now_struct_str:
-                    # section of .ingress
-                    if is_skip_next:
-                        if re.match(r'^\s*#+', line):
-                            file_text += line
-                            is_skip_next = True
-                            continue
-                        else:
-                            is_skip_next = False
-                            continue
-                    if need_to_uncomment_q:
-                        if re.match(r'^\s*#+', line):
-                            if re.match(r'^\s*#+\s*[\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+', line):
-                                file_text += indent_uncomment + re.sub(r'^\s*#+\s*([\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+)', r'\1', line)
-                                count_uncomment += 1
-                                continue
-                        else:
-                            if count_uncomment == 0:
-                                file_text += indent_uncomment + 'kubernetes.io/ingress.class: nginx' + '\n'
-                                file_text += indent_uncomment + 'kubernetes.io/tls-acme: \'true\'' + '\n'
-                            count_uncomment = 0
-                            need_to_uncomment_q = False
-                    if re.match(r'^\s*enabled:', line):
-                        file_text = file_text + ' ' * now_indent + 'enabled: true' + '\n'
-                        continue
-                    if re.match(r'^\s*certManager:', line):
-                        file_text = file_text + ' ' * now_indent + 'certManager: true' + '\n'
-                        continue
-                    if re.match(r'^\s*#*\s*annotations:', line):
-                        need_to_uncomment_q = True
-                        target_line = line
-                        if now_indent < 0:
-                            _indent_unit_from_struct = len(now_struct_str.split('.')) - 1
-                            indent_uncomment = ' ' * _indent_unit_from_struct * indent_unit + ' ' * indent_unit
-                            target_line = ' ' * _indent_unit_from_struct * indent_unit + 'annotations:' + '\n'
-                        else:
-                            indent_uncomment = ' ' * now_indent + ' ' * indent_unit
-                        annotations_item = ingress_dict.get('.'.join(structure.parent())).get('annotations', None)
-                        if annotations_item is None:
-                            file_text += target_line
-                            continue
-                        if len(annotations_item) == 0:
-                            file_text = file_text + ' ' * now_indent + 'annotations:' + '\n'
-                            continue
-                        elif len(annotations_item) > 0:
-                            file_text += target_line
-                            continue
-                    # section of .ingress.hosts
-                    if re.match(r'^\s*-*\s*tls:', line):
-                        file_text += re.sub(r'(^\s*-*\s*)(tls:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tls: true' + '\n'
-                        continue
-                    if re.match(r'^\s*-*\s*name:', line):
-                        hostname = '.'.join(structure.get_struct()[1:-1])
-                        if hostname == '':
-                            hostname = self.module_name + '.rdbox.lan'
-                        else:
-                            hostname = hostname + '.' + self.module_name + '.rdbox.lan'
-                        file_text += re.sub(r'(^\s*-*\s*)(name:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'name: ' + hostname + '\n'
-                        continue
-                    if re.match(r'^\s*-*\s*tlsSecret:', line):
-                        file_text += re.sub(r'(^\s*-*\s*)(tlsSecret:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsSecret: rdbox-common-tls' + '\n'
-                        continue
-                    if re.match(r'^\s*#*-*\s*tlsHosts:', line):
-                        hosts_item = ingress_dict.get('.'.join(structure.parent())).get('hosts', [{}])[0].get('tlsHosts', None)
-                        if hosts_item is None:
-                            file_text += line
-                            continue
-                        if len(hosts_item) == 0:
-                            file_text += re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsHosts:' + '\n'
-                            file_text += re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * indent_unit + '- ' + '"*.rdbox.lan"' + '\n'
-                            continue
-                        elif len(hosts_item) > 0:
-                            file_text += line
-                            file_text += re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * indent_unit + '- ' + '"*.rdbox.lan"' + '\n'
-                            is_skip_next = True
-                            continue
-                    file_text += line
-                else:
-                    file_text += line
+    def __has_regex_tag_with_lines(self, lines, regex):
+        result = False
+        for line in lines:
+            if re.match(regex, line):
+                result = True
+                break
+        return result
+
+    def __get_indent_info(self, lines):
+        il = IndentList()
+        for line in lines:
+            il.add_with_line_of_text(line)
+        return il.to_list(), il.get_unit_indent_length()
+
+
+class FilterOfIngress(object):
+    def __init__(self, module_name: str, lines: List[str]):
+        """Filter of ingress
+
+        Args:
+            module_name (str): module name
+            lines (list): A list of values.yaml divided by a new line
+        """
+        self.module_name = module_name
+        self.lines = lines
+        self.ingress_dicts = Util.has_key_recursion_full(yaml.safe_load('\n'.join(lines)), 'ingress')
+
+    def filter(self) -> Tuple[List[str], bool]:
+        """Edit the ingressTag.
+
+        Returns:
+            List[str]: After editing values.yaml
+            bool: Changed or not (True means already changed)
+        """
+        flt: BaseFilterOfIngress
+        # Validation
+        if len(self.ingress_dicts.keys()) == 0:
+            return self.lines, False
+        if not self.__has_key_of_hosts_with(self.ingress_dicts):
+            return self.lines, False
+        # Select
+        if self.__has_str_value_of_hosts(self.ingress_dicts):
+            # Validation
+            if not self.__passed_str_hosts_ingress(self.ingress_dicts):
+                return self.lines, False
+            flt = FilterOfStrHostsIngress(self.module_name, self.lines, self.ingress_dicts)
+        elif self.__has_dict_value_of_hosts(self.ingress_dicts):
+            # Validation
+            if not self.__passed_dict_hosts_ingress(self.ingress_dicts):
+                return self.lines, False
+            flt = FilterOfDictHostsIngress(self.module_name, self.lines, self.ingress_dicts)
         else:
-            return
-        with open(self.full_path, 'w') as file:
-            file.write(file_text)
+            return self.lines, False
+        # Execute
+        try:
+            self.lines = flt.filter()
+            return self.lines, True
+        except Exception:
+            return self.lines, False
+
+    def __has_key_of_hosts_with(self, ingress_dict):
+        result = False
+        for _, v in ingress_dict.items():
+            if 'hosts' in v:
+                result = True
+            else:
+                result = False
+                break
+        return result
+
+    def __has_dict_value_of_hosts(self, ingress_dict):
+        result = False
+        for k, v in ingress_dict.items():
+            if isinstance(v.get('hosts'), list):
+                if len(v.get('hosts')) == 0:
+                    result = False
+                    break
+                else:
+                    if isinstance(v.get('hosts')[0], dict):
+                        result = True
+                    else:
+                        result = False
+                        break
+            else:
+                result = False
+                break
+        return result
+
+    def __has_str_value_of_hosts(self, ingress_dict):
+        result = False
+        for k, v in ingress_dict.items():
+            if isinstance(v.get('hosts'), list):
+                if len(v.get('hosts')) == 0:
+                    result = True
+                else:
+                    if isinstance(v.get('hosts')[0], str):
+                        result = True
+                    else:
+                        result = False
+                        break
+            else:
+                if 'hosts' in v:
+                    # For None
+                    result = True
+                else:
+                    result = False
+                    break
+        return result
 
     def __passed_str_hosts_ingress(self, ingress_dict):
         result = False
@@ -408,114 +407,217 @@ class ValuesYaml(object):
             result = True
         return result
 
-    def __has_key_of_hosts(self, ingress_dict):
-        result = False
-        for k, v in ingress_dict.items():
-            if 'hosts' in v:
-                result = True
-            else:
-                result = False
-                break
-        return result
 
-    def __has_dict_key_of_hosts(self, ingress_dict):
-        result = False
-        for k, v in ingress_dict.items():
-            if isinstance(v.get('hosts'), list):
-                if len(v.get('hosts')) == 0:
-                    result = False
-                    break
+class BaseFilterOfIngress(object):
+    def __init__(self, module_name: str, lines: list, ingress_dicts: dict):
+        self.module_name = module_name
+        self.lines = lines
+        self.ingress_dicts = ingress_dicts
+        self.indent_unit = 2
+
+    def filter(self) -> List[str]:
+        raise Exception
+
+    def generator(self):
+        self.__update_lines_info()
+        for index, line in enumerate(self.lines):
+            now_indent = self.indent_list[index]
+            now_struct_str = self.structure.update(line, now_indent)
+            if '.ingress' in now_struct_str:
+                yield index, line, now_indent, self.structure
+
+    def filter_enabled(self):
+        for index, line, now_indent, _ in self.generator():
+            if re.match(r'^\s*enabled:', line):
+                self.lines[index] = ' ' * now_indent + 'enabled: true' + '\n'
+
+    def filter_annotations(self):
+        need_to_uncomment_q = False
+        count_uncomment = 0
+        indent_uncomment = 0
+        for index, line, now_indent, structure in self.generator():
+            if need_to_uncomment_q:
+                if re.match(r'^\s*#+', line):
+                    if re.match(r'^\s*#+\s*[\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+', line):
+                        self.lines[index] = indent_uncomment + re.sub(r'^\s*#+\s*([\.\_\-\"\'\/a-zA-Z0-9]+:\s[\.\_\-\"\'\/a-zA-Z0-9]+)', r'\1', line)
+                        count_uncomment += 1
                 else:
-                    if isinstance(v.get('hosts')[0], dict):
-                        result = True
-                    else:
-                        result = False
-                        break
-            else:
-                result = False
-                break
-        return result
-
-    def __has_str_key_of_hosts(self, ingress_dict):
-        result = False
-        for k, v in ingress_dict.items():
-            if isinstance(v.get('hosts'), list):
-                if len(v.get('hosts')) == 0:
-                    result = True
+                    if count_uncomment == 0:
+                        self.lines.insert(index, indent_uncomment + 'kubernetes.io/ingress.class: nginx' + '\n')
+                        self.lines.insert(index, indent_uncomment + 'kubernetes.io/tls-acme: \'true\'' + '\n')
+                        self.__update_lines_info()
+                    need_to_uncomment_q = False
+                    count_uncomment = 0
+            if re.match(r'^\s*#*\s*annotations:', line):
+                need_to_uncomment_q = True
+                target_line = line
+                if now_indent < 0:
+                    _indent_unit_from_struct = len(structure.to_str().split('.')) - 1
+                    indent_uncomment = ' ' * _indent_unit_from_struct * self.indent_unit + ' ' * self.indent_unit
+                    target_line = ' ' * _indent_unit_from_struct * self.indent_unit + 'annotations:' + '\n'
                 else:
-                    if isinstance(v.get('hosts')[0], str):
-                        result = True
-                    else:
-                        result = False
-                        break
+                    indent_uncomment = ' ' * now_indent + ' ' * self.indent_unit
+                annotations_item = self.ingress_dicts.get('.'.join(structure.parent())).get('annotations', None)
+                if annotations_item is None:
+                    self.lines[index] = target_line
+                    continue
+                if len(annotations_item) == 0:
+                    self.lines[index] = ' ' * now_indent + 'annotations:' + '\n'
+                    continue
+                elif len(annotations_item) > 0:
+                    self.lines[index] = target_line
+                    continue
             else:
-                if 'hosts' in v:
-                    # For None
-                    result = True
-                else:
-                    result = False
-                    break
-        return result
+                continue
 
-    def __has_global_tag_with_lines(self, lines):
-        return self.__has_regex_tag_with_lines(lines, r'^#\sglobal:') or self.__has_regex_tag_with_lines(lines, r'^global:')
+    def lines_insert(self, index, content):
+        self.lines.insert(index, content)
+        self.__update_lines_info()
 
-    def __has_storageClass_tag_with_lines(self, lines):
-        return self.__has_regex_tag_with_lines(lines, r'^\s*#*\s*storageClass:')
-
-    def __has_regex_tag_with_lines(self, lines, regex):
-        result = False
-        for line in lines:
-            if re.match(regex, line):
-                result = True
-                break
-        return result
-
-    def _get_multi_arch_dict(self, lines):
-        multi_arch_dict = {}
-        obj_values = yaml.safe_load('\n'.join(lines))
-        node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
-        image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
-        if len(node_selector_list) == len(image_list):
-            all_image_list = Util.has_key_recursion_full(obj_values, 'image')
-            for struct, image_dict in all_image_list.items():
-                repo_uri = image_dict.get('repository', image_dict.get('name', ''))
-                if self._is_hosted_on_dockerhub(repo_uri):
-                    url = self._build_url_of_dockerhub(image_dict, repo_uri)
-                    if self._has_multiarch_image(url):
-                        multi_arch_dict.setdefault(struct, repo_uri)
-        return multi_arch_dict
-
-    def _is_hosted_on_dockerhub(self, repo_url):
-        repo_url_list = repo_url.split('/')
-        if len(repo_url_list) <= 2:
-            return True
+    def build_hostname(self, structure):
+        hostname = '.'.join(structure.get_struct()[1:-1])
+        if hostname == '':
+            hostname = self.module_name + '.rdbox.lan'
         else:
-            return False
+            hostname = hostname + '.' + self.module_name + '.rdbox.lan'
+        return hostname
 
-    def _build_url_of_dockerhub(self, image_tag_dict, repo_uri):
-        uri = repo_uri
-        repo_url_list = repo_uri.split('/')
-        if len(repo_url_list) == 1:
-            uri = 'library' + '/' + repo_uri
-        url = 'https://hub.docker.com/v2/repositories/{uri}/tags/{tag}'.format(uri=uri, tag=image_tag_dict.get('tag'))
-        return url
-
-    def _has_multiarch_image(self, url):
-        has_arch_arm = False
-        r = requests.get(url)
-        if r.status_code == requests.codes.ok:
-            data = r.json()
-            for v in data.get('images', []):
-                if v.get('architecture').startswith('arm'):
-                    has_arch_arm = True
-        return has_arch_arm
-
-    def _get_indent_info(self, lines):
+    def __get_indent_info(self):
         il = IndentList()
-        for line in lines:
+        for line in self.lines:
             il.add_with_line_of_text(line)
         return il.to_list(), il.get_unit_indent_length()
+
+    def __update_lines_info(self):
+        self.indent_list, self.indent_unit = self.__get_indent_info()
+        self.structure = Structure(self.indent_unit)
+
+
+class FilterOfDictHostsIngress(BaseFilterOfIngress):
+    def __init__(self, module_name: str, lines: list, ingress_dicts: dict):
+        super().__init__(module_name, lines, ingress_dicts)
+
+    def filter(self):
+        self.filter_enabled()
+        self.filter_annotations()
+        self.filter_certManager()
+        self.filter_name()
+        self.filter_tls()
+        self.filter_tlsSecret()
+        self.filter_tlsHosts()
+        return self.lines
+
+    def filter_certManager(self):
+        for index, line, now_indent, _ in self.generator():
+            if re.match(r'^\s*certManager:', line):
+                self.lines[index] = ' ' * now_indent + 'certManager: true' + '\n'
+
+    # section of .ingress.hosts
+    def filter_name(self):
+        for index, line, _, structure in self.generator():
+            if re.match(r'^\s*-*\s*name:', line):
+                hostname = self.build_hostname(structure)
+                self.lines[index] = re.sub(r'(^\s*-*\s*)(name:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'name: ' + hostname + '\n'
+
+    def filter_tls(self):
+        for index, line, _, _ in self.generator():
+            if re.match(r'^\s*-*\s*tls:', line):
+                self.lines[index] = re.sub(r'(^\s*-*\s*)(tls:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tls: true' + '\n'
+
+    def filter_tlsSecret(self):
+        for index, line, _, _ in self.generator():
+            if re.match(r'^\s*-*\s*tlsSecret:', line):
+                self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsSecret:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsSecret: rdbox-common-tls' + '\n'
+
+    def filter_tlsHosts(self):
+        need_to_skip_next = []
+        target_data = ''
+        for index, line, _, structure in self.generator():
+            if len(need_to_skip_next) > 0:
+                if re.match(r'^\s*#+', line):
+                    self.lines[index] = line
+                else:
+                    self.lines[index] = '#' + line
+                    need_to_skip_next.pop()
+                    if len(need_to_skip_next) == 0:
+                        self.lines_insert(index + 1, target_data)
+            if re.match(r'^\s*#*-*\s*tlsHosts:', line):
+                hosts_item = self.ingress_dicts.get('.'.join(structure.parent())).get('hosts', [{}])[0].get('tlsHosts', None)
+                if hosts_item is None:
+                    self.lines[index] = line
+                    continue
+                if len(hosts_item) == 0:
+                    self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsHosts:' + '\n'
+                    self.lines_insert(index + 1, re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * self.indent_unit + '- ' + '"*.rdbox.lan"' + '\n')
+                elif len(hosts_item) > 0:
+                    self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsHosts:' + '\n'
+                    target_data = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * self.indent_unit + '- ' + '"*.rdbox.lan"' + '\n'
+                    need_to_skip_next = range(len(hosts_item))
+            else:
+                continue
+
+
+class FilterOfStrHostsIngress(BaseFilterOfIngress):
+    def __init__(self, module_name: str, lines: list, ingress_dicts: dict):
+        super().__init__(module_name, lines, ingress_dicts)
+
+    def filter(self):
+        self.filter_enabled()
+        self.filter_annotations()
+        self.filter_tls()
+        self.filter_hosts()
+        return self.lines
+
+    def filter_hosts(self):
+        need_to_skip_next = []
+        target_data = ''
+        for index, line, now_indent, structure in self.generator():
+            if len(need_to_skip_next) > 0:
+                if re.match(r'^\s*#+', line):
+                    self.lines[index] = line
+                else:
+                    self.lines[index] = '#' + line
+                    need_to_skip_next.pop()
+                    if len(need_to_skip_next) == 0:
+                        self.lines_insert(index + 1, target_data)
+            if re.match(r'^\s*hosts:', line):
+                hostname = self.build_hostname(structure)
+                hosts_item = self.ingress_dicts.get('.'.join(structure.parent())).get('hosts', None)
+                if hosts_item is None:
+                    self.lines[index] = line
+                    self.lines_insert(index + 1, ' ' * now_indent + ' ' * self.indent_unit + '- ' + hostname + '\n')
+                    continue
+                if len(hosts_item) == 0:
+                    self.lines[index] = ' ' * now_indent + 'hosts:' + '\n'
+                    self.lines_insert(index + 1, ' ' * now_indent + ' ' * self.indent_unit + '- ' + hostname + '\n')
+                elif len(hosts_item) > 0:
+                    self.lines[index] = line
+                    target_data = ' ' * now_indent + ' ' * self.indent_unit + '- ' + hostname + '\n'
+                    need_to_skip_next = list(range(len(hosts_item)))
+            else:
+                continue
+
+    def filter_tls(self):
+        for index, line, now_indent, structure in self.generator():
+            if re.match(r'^\s*tls:', line):
+                tls_item = self.ingress_dicts.get('.'.join(structure.parent())).get('tls', None)
+                if tls_item is None:
+                    self.lines[index] = line
+                    content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=self.indent_unit)
+                    for i, text in enumerate(content.split('\n')):
+                        self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
+                    continue
+                if len(tls_item) == 0:
+                    self.lines[index] = ' ' * now_indent + 'tls:' + '\n'
+                    content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=self.indent_unit)
+                    for i, text in enumerate(content.split('\n')):
+                        self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
+                    continue
+                elif len(tls_item) > 0:
+                    self.lines[index] = line
+                    continue
+            else:
+                continue
 
 
 class FilterOfNodeSelector(object):
