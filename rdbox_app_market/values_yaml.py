@@ -65,20 +65,12 @@ class ValuesYaml(object):
         lines = []
         with open(self.full_path) as file:
             lines = file.readlines()
-        multi_arch_dict = self.__get_multi_arch_dict(lines)
-        indent_list, indent_unit = self.__get_indent_info(lines)
-        structure = Structure(indent_unit)
-        fileter_of_nodeSelector = FilterOfNodeSelector(indent_unit)
-        for i, line in enumerate(lines):
-            now_indent = indent_list[i]
-            now_struct_str = structure.update(line, now_indent)
-            if fileter_of_nodeSelector.is_processing():
-                is_multi_arch = now_struct_str in multi_arch_dict
-                file_text += fileter_of_nodeSelector.filter(line, now_indent, is_multi_arch)
-            else:
-                file_text += fileter_of_nodeSelector.filter(line, now_indent)
-        with open(self.full_path, 'w') as file:
-            file.write(file_text)
+        flt = FilterOfNodeSelector(self.module_name, lines)
+        file_text, is_changed = flt.filter()
+        if is_changed:
+            with open(self.full_path, 'w') as file:
+                file.write(file_text)
+        multi_arch_dict = flt.get_multi_arch_dict(lines)
         return multi_arch_dict
 
     def specify_storageClass_for_rdbox(self):
@@ -101,62 +93,6 @@ class ValuesYaml(object):
         if is_changed:
             with open(self.full_path, 'w') as file:
                 file.write(''.join(lines))
-
-    def __get_multi_arch_dict(self, lines: List[str]) -> Dict[str, str]:
-        """Get a dict of images that support multi-architectures.
-
-        The dockerhub allows you to get the architecture of the image with a REST API.
-
-        Args:
-            lines (List[str]): A list of values.yaml divided by a new line
-
-        Returns:
-            Dict[str, str]: key is Dot-separated characters indicate a layer. value is URI of a repository on the dockerhub.
-        """
-        multi_arch_dict = {}
-        obj_values = yaml.safe_load('\n'.join(lines))
-        node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
-        image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
-        if len(node_selector_list) == len(image_list):
-            all_image_list = Util.has_key_recursion_full(obj_values, 'image')
-            for struct, image_dict in all_image_list.items():
-                repo_uri = image_dict.get('repository', image_dict.get('name', ''))
-                if self.__is_hosted_on_dockerhub(repo_uri):
-                    url = self.__build_url_of_dockerhub(image_dict, repo_uri)
-                    if self.__has_multiarch_image(url):
-                        multi_arch_dict.setdefault(struct, repo_uri)
-        return multi_arch_dict
-
-    def __is_hosted_on_dockerhub(self, repo_url):
-        repo_url_list = repo_url.split('/')
-        if len(repo_url_list) <= 2:
-            return True
-        else:
-            return False
-
-    def __build_url_of_dockerhub(self, image_tag_dict, repo_uri):
-        uri = repo_uri
-        repo_url_list = repo_uri.split('/')
-        if len(repo_url_list) == 1:
-            uri = 'library' + '/' + repo_uri
-        url = 'https://hub.docker.com/v2/repositories/{uri}/tags/{tag}'.format(uri=uri, tag=image_tag_dict.get('tag'))
-        return url
-
-    def __has_multiarch_image(self, url):
-        has_arch_arm = False
-        r = requests.get(url)
-        if r.status_code == requests.codes.ok:
-            data = r.json()
-            for v in data.get('images', []):
-                if v.get('architecture').startswith('arm'):
-                    has_arch_arm = True
-        return has_arch_arm
-
-    def __get_indent_info(self, lines):
-        il = IndentList()
-        for line in lines:
-            il.add_with_line_of_text(line)
-        return il.to_list(), il.get_unit_indent_length()
 
 
 class FilterOfStorageClass(object):
@@ -238,7 +174,11 @@ class FilterOfStorageClass(object):
                 if indent_of_backward == indent_of_forward:
                     file_text = file_text + ' ' * indent_of_backward + 'storageClass: openebs-jiva-rdbox' + '\n'
                 else:
-                    file_text += line
+                    line_indent = re.sub(r'(^\s*)#*(\s*)(storageClass:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line)
+                    if len(line_indent) == indent_of_backward or len(line_indent) == indent_of_forward:
+                        file_text = file_text + line_indent + 'storageClass: openebs-jiva-rdbox' + '\n'
+                    else:
+                        file_text += line
             else:
                 file_text += line
         return file_text
@@ -621,13 +561,35 @@ class FilterOfStrHostsIngress(BaseFilterOfIngress):
 
 
 class FilterOfNodeSelector(object):
-    def __init__(self, indent_unit):
-        self.indent_unit = indent_unit
+    def __init__(self, module_name: str, lines: List[str]):
+        """Filter of ingress
+
+        Args:
+            module_name (str): module name
+            lines (list): A list of values.yaml divided by a new line
+        """
+        self.module_name = module_name
+        self.lines = lines
         self.node_selector_indent = 0
         self.is_nodeSelector_in_processing = False
         self.original_nodeSelector_text = ''
+        self.multi_arch_dict = self.get_multi_arch_dict(lines)
 
-    def filter(self, line, indent, is_multi_arch=False):
+    def filter(self):
+        file_text = ''
+        self.indent_list, self.indent_unit = self.__get_indent_info(self.lines)
+        structure = Structure(self.indent_unit)
+        for i, line in enumerate(self.lines):
+            now_indent = self.indent_list[i]
+            now_struct_str = structure.update(line, now_indent)
+            if self.is_processing():
+                is_multi_arch = now_struct_str in self.multi_arch_dict
+                file_text += self.__filter(line, now_indent, is_multi_arch)
+            else:
+                file_text += self.__filter(line, now_indent)
+        return file_text, True
+
+    def __filter(self, line, indent, is_multi_arch=False):
         if self.is_nodeSelector_in_processing:
             return self._processing_of_block_elements(line, is_multi_arch)
         else:
@@ -650,13 +612,15 @@ class FilterOfNodeSelector(object):
     def _processing_of_block_elements(self, line, is_multi_arch=False):
         file_text = ''
         if re.match(r'^\s*\n', line) or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
-            ns_obj = yaml.safe_load(self.original_nodeSelector_text)
-            if not isinstance(ns_obj.get('nodeSelector'), dict):
-                ns_obj = {'nodeSelector': {}}
-            ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
+            nodeSelector_obj = yaml.safe_load(self.original_nodeSelector_text)
+            if not isinstance(nodeSelector_obj.get('nodeSelector'), dict):
+                nodeSelector_obj = {'nodeSelector': {}}
+            nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
             if not is_multi_arch:
-                ns_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
-            aligned_nodeSelector_text = yaml.dump(ns_obj, indent=self.indent_unit)
+                nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
+            else:
+                pass
+            aligned_nodeSelector_text = yaml.dump(nodeSelector_obj, indent=self.indent_unit)
             for text in aligned_nodeSelector_text.split('\n'):
                 file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
             self._reset()
@@ -667,6 +631,62 @@ class FilterOfNodeSelector(object):
     def _reset(self):
         self.is_nodeSelector_in_processing = False
         self.original_nodeSelector_text = ''
+
+    def get_multi_arch_dict(self, lines: List[str]) -> Dict[str, str]:
+        """Get a dict of images that support multi-architectures.
+
+        The dockerhub allows you to get the architecture of the image with a REST API.
+
+        Args:
+            lines (List[str]): A list of values.yaml divided by a new line
+
+        Returns:
+            Dict[str, str]: key is Dot-separated characters indicate a layer. value is URI of a repository on the dockerhub.
+        """
+        multi_arch_dict = {}
+        obj_values = yaml.safe_load('\n'.join(lines))
+        node_selector_list = [i for i, line in enumerate(lines) if re.match(r'^\s*nodeSelector:', line)]
+        image_list = [i for i, line in enumerate(lines) if re.match(r'^\s*image:', line)]
+        if len(node_selector_list) == len(image_list):
+            all_image_list = Util.has_key_recursion_full(obj_values, 'image')
+            for struct, image_dict in all_image_list.items():
+                repo_uri = image_dict.get('repository', image_dict.get('name', ''))
+                if self.__is_hosted_on_dockerhub(repo_uri):
+                    url = self.__build_url_of_dockerhub(image_dict, repo_uri)
+                    if self.__has_multiarch_image(url):
+                        multi_arch_dict.setdefault(struct, repo_uri)
+        return multi_arch_dict
+
+    def __is_hosted_on_dockerhub(self, repo_url):
+        repo_url_list = repo_url.split('/')
+        if len(repo_url_list) <= 2:
+            return True
+        else:
+            return False
+
+    def __build_url_of_dockerhub(self, image_tag_dict, repo_uri):
+        uri = repo_uri
+        repo_url_list = repo_uri.split('/')
+        if len(repo_url_list) == 1:
+            uri = 'library' + '/' + repo_uri
+        url = 'https://hub.docker.com/v2/repositories/{uri}/tags/{tag}'.format(uri=uri, tag=image_tag_dict.get('tag'))
+        return url
+
+    def __has_multiarch_image(self, url):
+        has_arch_arm = False
+        r = requests.get(url)
+        if r.status_code == requests.codes.ok:
+            data = r.json()
+            for v in data.get('images', []):
+                if v.get('architecture').startswith('arm'):
+                    has_arch_arm = True
+        return has_arch_arm
+
+    def __get_indent_info(self, lines):
+        il = IndentList()
+        for line in lines:
+            il.add_with_line_of_text(line)
+        return il.to_list(), il.get_unit_indent_length()
 
 
 class Structure(object):
