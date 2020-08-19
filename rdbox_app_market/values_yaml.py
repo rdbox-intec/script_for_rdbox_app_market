@@ -589,49 +589,6 @@ class FilterOfNodeSelector(object):
                 file_text += self.__filter(line, now_indent)
         return file_text, True
 
-    def __filter(self, line, indent, is_multi_arch=False):
-        if self.is_nodeSelector_in_processing:
-            return self._processing_of_block_elements(line, is_multi_arch)
-        else:
-            if self._is_start_of_block_element(line, indent):
-                return ''
-            else:
-                return line
-
-    def is_processing(self):
-        return self.is_nodeSelector_in_processing
-
-    def _is_start_of_block_element(self, line, indent):
-        if re.match(r'^\s*nodeSelector:', line):
-            self.is_nodeSelector_in_processing = True
-            self.original_nodeSelector_text += line
-            self.node_selector_indent = indent
-            return True
-        return False
-
-    def _processing_of_block_elements(self, line, is_multi_arch=False):
-        file_text = ''
-        if re.match(r'^\s*\n', line) or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
-            nodeSelector_obj = yaml.safe_load(self.original_nodeSelector_text)
-            if not isinstance(nodeSelector_obj.get('nodeSelector'), dict):
-                nodeSelector_obj = {'nodeSelector': {}}
-            nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
-            if not is_multi_arch:
-                nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
-            else:
-                pass
-            aligned_nodeSelector_text = yaml.dump(nodeSelector_obj, indent=self.indent_unit)
-            for text in aligned_nodeSelector_text.split('\n'):
-                file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
-            self._reset()
-        else:
-            self.original_nodeSelector_text += line
-        return file_text
-
-    def _reset(self):
-        self.is_nodeSelector_in_processing = False
-        self.original_nodeSelector_text = ''
-
     def get_multi_arch_dict(self, lines: List[str]) -> Dict[str, str]:
         """Get a dict of images that support multi-architectures.
 
@@ -656,6 +613,49 @@ class FilterOfNodeSelector(object):
                     if self.__has_multiarch_image(url):
                         multi_arch_dict.setdefault(struct, repo_uri)
         return multi_arch_dict
+
+    def __filter(self, line, indent, is_multi_arch=False):
+        if self.is_nodeSelector_in_processing:
+            return self.__processing_of_block_elements(line, is_multi_arch)
+        else:
+            if self.__is_start_of_block_element(line, indent):
+                return ''
+            else:
+                return line
+
+    def is_processing(self):
+        return self.is_nodeSelector_in_processing
+
+    def __is_start_of_block_element(self, line, indent):
+        if re.match(r'^\s*nodeSelector:', line):
+            self.is_nodeSelector_in_processing = True
+            self.original_nodeSelector_text += line
+            self.node_selector_indent = indent
+            return True
+        return False
+
+    def __processing_of_block_elements(self, line, is_multi_arch=False):
+        file_text = ''
+        if re.match(r'^\s*\n', line) or re.match(r'^\s*[0-9a-zA-Z]*:', line) or re.match(r'^\s*#', line):
+            nodeSelector_obj = yaml.safe_load(self.original_nodeSelector_text)
+            if not isinstance(nodeSelector_obj.get('nodeSelector'), dict):
+                nodeSelector_obj = {'nodeSelector': {}}
+            nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
+            if not is_multi_arch:
+                nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
+            else:
+                pass
+            aligned_nodeSelector_text = yaml.dump(nodeSelector_obj, indent=self.indent_unit)
+            for text in aligned_nodeSelector_text.split('\n'):
+                file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
+            self.__reset()
+        else:
+            self.original_nodeSelector_text += line
+        return file_text
+
+    def __reset(self):
+        self.is_nodeSelector_in_processing = False
+        self.original_nodeSelector_text = ''
 
     def __is_hosted_on_dockerhub(self, repo_url):
         repo_url_list = repo_url.split('/')
@@ -741,7 +741,7 @@ class IndentList(object):
             self.append(-1)
             return
         # RAW Indent #
-        indent_length_of_processing_line = self._get_indent_length_of_target(line)
+        indent_length_of_processing_line = self.__get_indent_length_of_target(line)
         # Filter #
         for filter in self.filters:
             if filter.is_filterd(line, indent_length_of_processing_line):
@@ -759,7 +759,7 @@ class IndentList(object):
                 break
         return unit
 
-    def _get_indent_length_of_target(self, line):
+    def __get_indent_length_of_target(self, line):
         indent_length = 0
         head_str = re.split(r'[0-9a-zA-Z\-\"\']{1,}', line)
         if head_str[0].startswith(' '):
@@ -777,11 +777,11 @@ class FilterOfBlockElementForIndentList(object):
 
     def is_filterd(self, line, indent_length_of_processing_line):
         if not self.is_block_of_yaml_in_processing:
-            if self._is_start_of_block_element(line, indent_length_of_processing_line):
+            if self.__is_start_of_block_element(line, indent_length_of_processing_line):
                 return True
-        return self._processing_of_block_elements(indent_length_of_processing_line)
+        return self.__processing_of_block_elements(indent_length_of_processing_line)
 
-    def _is_start_of_block_element(self, line, indent_length_of_processing_line):
+    def __is_start_of_block_element(self, line, indent_length_of_processing_line):
         if re.match(self.regex, line):
             self.is_block_of_yaml_in_processing = True
             if self.indent_length_of_block_of_yaml == -1:
@@ -789,17 +789,17 @@ class FilterOfBlockElementForIndentList(object):
             return True
         return False
 
-    def _processing_of_block_elements(self, indent_length_of_processing_line):
+    def __processing_of_block_elements(self, indent_length_of_processing_line):
         if self.is_block_of_yaml_in_processing and indent_length_of_processing_line >= 0:
             if indent_length_of_processing_line > self.indent_length_of_block_of_yaml:
                 # countinue
                 return True
             else:
                 # end
-                self._reset()
+                self.__reset()
                 return False
         return False
 
-    def _reset(self):
+    def __reset(self):
         self.is_block_of_yaml_in_processing = False
         self.indent_length_of_list_of_yaml = -1
