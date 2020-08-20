@@ -4,8 +4,13 @@ import requests
 import yaml
 import re
 from typing import Dict, List, Tuple
+from logging import getLogger
 
+import rdbox_app_market.config
 from rdbox_app_market.util import Util
+
+r_logger = getLogger('rdbox_cli')
+r_print = getLogger('rdbox_cli').getChild("stdout")
 
 
 class ValuesYaml(object):
@@ -21,8 +26,9 @@ class ValuesYaml(object):
                     return False
                 else:
                     return True
-        except Exception as e:
-            print(e)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
             return False
 
     def has_commentout_nodeSelector(self):
@@ -33,8 +39,9 @@ class ValuesYaml(object):
                     return True
                 else:
                     return False
-        except Exception as e:
-            print(e)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
             return False
 
     def has_expected_structure_for_imagetag(self):
@@ -47,8 +54,9 @@ class ValuesYaml(object):
                         return True
                     else:
                         return False
-        except Exception as e:
-            print(e)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
             return False
 
     def correct_commentout_nodeSelector(self):
@@ -58,10 +66,10 @@ class ValuesYaml(object):
                 file_text = file.read()
                 file_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
             with open(self.full_path, 'w') as file:
-                print("Modify(nodeSelector): " + self.module_name)
                 file.write(file_text)
-        except Exception as e:
-            print(e)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
 
     def specify_nodeSelector_for_rdbox(self):
         file_text = ""
@@ -127,7 +135,7 @@ class FilterOfStorageClass(object):
             return file_text, True
         except Exception:
             import traceback
-            print(traceback.format_exc())
+            r_logger.warning(traceback.format_exc())
             return ''.join(self.lines), False
 
     def __has_global_tag_with_lines(self, lines):
@@ -152,7 +160,7 @@ class FilterOfStorageClass(object):
                     if re.match(r'^\s*#*\s*storageClass:', line):
                         # find in global tag.
                         text_in_global_tag = 'global:\n' + text_in_global_tag
-                        text_in_global_tag += ' ' * indent_unit + 'storageClass: openebs-jiva-rdbox' + '\n'
+                        text_in_global_tag += ' ' * indent_unit + 'storageClass: ' + rdbox_app_market.config.get('kubernetes', 'common_storage') + '\n'
                         is_indent_of_global_tag = False
                         file_text += text_in_global_tag
                         continue
@@ -175,11 +183,11 @@ class FilterOfStorageClass(object):
             if re.match(r'^\s*#*\s*storageClass:\s[\-\_\/\"\'a-zA-Z0-9]+', line):
                 indent_of_backward, indent_of_forward = self.__get_indent_of_back_and_forward(indent_list, i)
                 if indent_of_backward == indent_of_forward:
-                    file_text = file_text + ' ' * indent_of_backward + 'storageClass: openebs-jiva-rdbox' + '\n'
+                    file_text = file_text + ' ' * indent_of_backward + 'storageClass: ' + rdbox_app_market.config.get('kubernetes', 'common_storage') + '\n'
                 else:
                     line_indent = re.sub(r'(^\s*)#*(\s*)(storageClass:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line)
                     if len(line_indent) == indent_of_backward or len(line_indent) == indent_of_forward:
-                        file_text = file_text + line_indent + 'storageClass: openebs-jiva-rdbox' + '\n'
+                        file_text = file_text + line_indent + 'storageClass: ' + rdbox_app_market.config.get('kubernetes', 'common_storage') + '\n'
                     else:
                         file_text += line
             else:
@@ -420,9 +428,9 @@ class BaseFilterOfIngress(object):
     def build_hostname(self, structure):
         hostname = '.'.join(structure.get_struct()[1:-1])
         if hostname == '':
-            hostname = self.module_name + '.rdbox.lan'
+            hostname = self.module_name + '.' + rdbox_app_market.config.get('kubernetes', 'common_domain')
         else:
-            hostname = hostname + '.' + self.module_name + '.rdbox.lan'
+            hostname = hostname + '.' + self.module_name + '.' + rdbox_app_market.config.get('kubernetes', 'common_domain')
         return hostname
 
     def __get_indent_info(self):
@@ -470,7 +478,7 @@ class FilterOfDictHostsIngress(BaseFilterOfIngress):
     def filter_tlsSecret(self):
         for index, line, _, _ in self.generator():
             if re.match(r'^\s*-*\s*tlsSecret:', line):
-                self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsSecret:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsSecret: rdbox-common-tls' + '\n'
+                self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsSecret:\s[\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsSecret: ' + rdbox_app_market.config.get('kubernetes', 'common_cert') + '\n'
 
     def filter_tlsHosts(self):
         need_to_skip_next = []
@@ -491,10 +499,10 @@ class FilterOfDictHostsIngress(BaseFilterOfIngress):
                     continue
                 if len(hosts_item) == 0:
                     self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsHosts:' + '\n'
-                    self.lines_insert(index + 1, re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * self.indent_unit + '- ' + '"*.rdbox.lan"' + '\n')
+                    self.lines_insert(index + 1, re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * self.indent_unit + '- ' + '"*.' + rdbox_app_market.config.get('kubernetes', 'common_domain') + '"' + '\n')
                 elif len(hosts_item) > 0:
                     self.lines[index] = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + 'tlsHosts:' + '\n'
-                    target_data = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * self.indent_unit + '- ' + '"*.rdbox.lan"' + '\n'
+                    target_data = re.sub(r'(^\s*-*\s*)(tlsHosts:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line) + ' ' * self.indent_unit + '- ' + '"*.' + rdbox_app_market.config.get('kubernetes', 'common_domain') + '"' + '\n'
                     need_to_skip_next = range(len(hosts_item))
             else:
                 continue
@@ -544,15 +552,16 @@ class FilterOfStrHostsIngress(BaseFilterOfIngress):
         for index, line, now_indent, structure in self.generator():
             if re.match(r'^\s*tls:', line):
                 tls_item = self.ingress_dicts.get('.'.join(structure.parent())).get('tls', None)
+                hosts_item = '*.' + rdbox_app_market.config.get('kubernetes', 'common_domain')
                 if tls_item is None:
                     self.lines[index] = line
-                    content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=self.indent_unit)
+                    content = yaml.dump([{'secretName': rdbox_app_market.config.get('kubernetes', 'common_cert'), 'hosts': [hosts_item]}], indent=self.indent_unit)
                     for i, text in enumerate(content.split('\n')):
                         self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
                     continue
                 if len(tls_item) == 0:
                     self.lines[index] = ' ' * now_indent + 'tls:' + '\n'
-                    content = yaml.dump([{'secretName': 'rdbox-common-tls', 'hosts': ['"*.rdbox.lan"']}], indent=self.indent_unit)
+                    content = yaml.dump([{'secretName': rdbox_app_market.config.get('kubernetes', 'common_cert'), 'hosts': [hosts_item]}], indent=self.indent_unit)
                     for i, text in enumerate(content.split('\n')):
                         self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
                     continue
@@ -577,20 +586,6 @@ class FilterOfNodeSelector(object):
         self.is_nodeSelector_in_processing = False
         self.original_nodeSelector_text = ''
         self.multi_arch_dict = self.get_multi_arch_dict(lines)
-
-    def filter(self):
-        file_text = ''
-        self.indent_list, self.indent_unit = self.__get_indent_info(self.lines)
-        structure = Structure(self.indent_unit)
-        for i, line in enumerate(self.lines):
-            now_indent = self.indent_list[i]
-            now_struct_str = structure.update(line, now_indent)
-            if self.is_processing():
-                is_multi_arch = now_struct_str in self.multi_arch_dict
-                file_text += self.__filter(line, now_indent, is_multi_arch)
-            else:
-                file_text += self.__filter(line, now_indent)
-        return file_text, True
 
     def get_multi_arch_dict(self, lines: List[str]) -> Dict[str, str]:
         """Get a dict of images that support multi-architectures.
@@ -617,6 +612,25 @@ class FilterOfNodeSelector(object):
                         multi_arch_dict.setdefault(struct, repo_uri)
         return multi_arch_dict
 
+    def is_processing(self):
+        return self.is_nodeSelector_in_processing
+
+    def filter(self):
+        file_text = ''
+        self.indent_list, self.indent_unit = self.__get_indent_info(self.lines)
+        structure = Structure(self.indent_unit)
+        for i, line in enumerate(self.lines):
+            now_indent = self.indent_list[i]
+            now_struct_str = structure.update(line, now_indent)
+            if self.is_nodeSelector_in_processing:
+                if structure.get_struct()[-1] == 'nodeSelector':
+                    now_struct_str = '.'.join(structure.get_struct()[:-1])
+                is_multi_arch = now_struct_str in self.multi_arch_dict
+                file_text += self.__filter(line, now_indent, is_multi_arch)
+            else:
+                file_text += self.__filter(line, now_indent)
+        return file_text, True
+
     def __filter(self, line, indent, is_multi_arch=False):
         if self.is_nodeSelector_in_processing:
             return self.__processing_of_block_elements(line, is_multi_arch)
@@ -625,9 +639,6 @@ class FilterOfNodeSelector(object):
                 return ''
             else:
                 return line
-
-    def is_processing(self):
-        return self.is_nodeSelector_in_processing
 
     def __is_start_of_block_element(self, line, indent):
         if re.match(r'^\s*nodeSelector:', line):

@@ -3,6 +3,7 @@ FROM ubuntu:focal
 ENV PYTHONPATH "${PYTHONPATH}:/script_for_rdbox_app_market"
 ENV DEBIAN_FRONTEND noninteractive
 ENV DEBCONF_NOWARNINGS yes
+ENV RDBOX_APP_MARKET_CONF "/script_for_rdbox_app_market/rdbox_app_market.conf"
 
 RUN apt-get update && apt-get install -y \
         python3 \

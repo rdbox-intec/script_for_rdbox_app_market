@@ -128,9 +128,10 @@ class RdboxGithubRepos(GithubRepos):
         self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.branch, depth=1)
         ###
         try:
-            for file in glob.glob(os.path.join(self.get_dirpath_with_prefix(), '*.tgz'), recursive=True):
-                os.remove(file)
-            for file in glob.glob(os.path.join(self.get_dirpath_with_prefix(), 'index.yaml'), recursive=True):
-                os.remove(file)
+            for target in glob.glob(os.path.join(self.get_dirpath_with_prefix(), '*'), recursive=True):
+                if os.path.isfile(target):
+                    os.remove(target)
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
         except FileNotFoundError:
             pass

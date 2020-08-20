@@ -11,10 +11,15 @@ from pathlib import Path
 from multiprocessing import Pool
 from itertools import repeat
 
+import rdbox_app_market.config
 from rdbox_app_market.util import Util
 from rdbox_app_market.helm import HelmCommand
 from rdbox_app_market.github import GithubRepos, RdboxGithubRepos
 from rdbox_app_market.values_yaml import ValuesYaml
+
+from logging import getLogger
+r_logger = getLogger('rdbox_cli')
+r_print = getLogger('rdbox_cli').getChild("stdout")
 
 
 class Collector(object):
@@ -44,7 +49,7 @@ class Collector(object):
         """
         chart_in_specific_dir = ChartInSpecificDir(self.rdbox_master_repo, ChartInSpecificDir.ANNOTATION_OTHERS)
         for repo in self.reference_repos:
-            print('------------------- {url} ------------------'.format(url=repo.get_url()))
+            r_print.info('------------------- {url} ------------------'.format(url=repo.get_url()))
             now_processing_isolations, now_processing_dependons = NonAnalyzeChartInSpecificDir(repo).preprocessing()
             chart_in_specific_dir.merge(now_processing_isolations)
             chart_in_specific_dir.merge(now_processing_dependons)
@@ -93,7 +98,7 @@ class Publisher(object):
         Returns:
             ChartInSpecificDir: Information about the Helm Chart to be published in the RDBOX App Market.
         """
-        print('------------------- {url} ------------------'.format(url=self.rdbox_gh_repo.get_url()))
+        r_print.info('------------------- {url} ------------------'.format(url=self.rdbox_gh_repo.get_url()))
         #########
         invalid_key_list = self.isolations.convert(self.rdbox_gh_repo)
         self.dependons.remove_by_depend_modules_list(invalid_key_list)
@@ -217,8 +222,9 @@ class ChartInSpecificDir(object):
                 pass
             try:
                 shutil.copytree(helm_module.get_module_dir_path(), path)
-            except Exception as e:
-                print(e)
+            except Exception:
+                import traceback
+                r_logger.warning(traceback.format_exc())
 
     def preprocessing(self) -> tuple[ChartInSpecificDir]:
         """Pre-processing before converting to charts for RDBOX App Market.
@@ -256,12 +262,12 @@ class ChartInSpecificDir(object):
             list[str]: List of module names that failed to be converted.
         """
         invalid_key_list = []
-        p = Pool(int(os.cpu_count() * 0.85))
+        p = Pool(int(os.cpu_count() * float(rdbox_app_market.config.get('rdbox', 'maximum_cpu_usage'))))
         result = p.starmap(self.convert_detail, zip(repeat(repo_for_rdbox), self.get_all_HelmModule_mapped_by_module_name().keys(), self.get_all_HelmModule_mapped_by_module_name().values()))
         for invalids in result:
             invalid_key_list.extend(invalids)
         for module_name in invalid_key_list:
-            print('Delete(MISS_CONVERT): ' + module_name)
+            r_print.info('Delete(MISS_CONVERT): ' + module_name)
         self.remove_by_key_list(invalid_key_list)
         return list(set(invalid_key_list))
 
@@ -279,10 +285,11 @@ class ChartInSpecificDir(object):
             self.__pack(repo_for_rdbox)
             # self.__publish(repo_for_rdbox)
         except ChartInSpecificDirPackError as e:
-            print("PackERR({msg})".find(str(e)))
+            r_print.warning("PackERR({msg})".find(str(e)))
             invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
-        except Exception as e:
-            print(e)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
             invalid_key_list.extend(self.get_all_HelmModule_mapped_by_module_name().keys())
         self.remove_by_key_list(invalid_key_list)
         return list(set(invalid_key_list))
@@ -311,7 +318,7 @@ class ChartInSpecificDir(object):
                 if helm_module.has_module_of_dependencies(depend_module_name):
                     del_keys.append(module_name)
         for key in list(set(del_keys)):
-            print('Delete(INVALID_DEP): ' + key)
+            r_print.info('Delete(INVALID_DEP): ' + key)
             self.__delete_entity_by_module_name(key)
             self.all_HelmModule_mapped_by_module_name.pop(key)
 
@@ -333,22 +340,35 @@ class ChartInSpecificDir(object):
                 self.__convert_dependons(repo_for_rdbox, module_name, helm_module)
         except ChartInSpecificDirConverError as e:
             invalid_key_list.append(module_name)
-            print("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
+            r_print.info("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
+            import traceback
+            r_logger.warning(traceback.format_exc())
         except Exception as e:
             invalid_key_list.append(module_name)
-            print("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
+            r_print.info("ConvertERR({msg}): {module_name}".format(msg=str(e), module_name=module_name))
+            import traceback
+            r_logger.warning(traceback.format_exc())
         finally:
             return invalid_key_list
 
     def __convert_isolations(self, repo_for_rdbox, module_name, helm_module):
         multi_arch_dict = {}
+        # Continue even if it fails.
         try:
             helm_module.specify_storageClass_for_rdbox()
             helm_module.specify_ingress_for_rdbox()
-            multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
         except Exception:
             import traceback
-            print(traceback.format_exc())
+            r_logger.warning(traceback.format_exc())
+        # Stop even if it fails.
+        try:
+            multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
+            if len(multi_arch_dict.keys()) > 0:
+                r_logger.debug('It has Multi Arch Image. ' + module_name)
+                r_logger.debug(multi_arch_dict)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
             raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox')
         ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
@@ -366,17 +386,26 @@ class ChartInSpecificDir(object):
             self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
         else:
             raise ChartInSpecificDirConverError(path_of_generation_result)
-        print("Convert(ISOLATIONS): " + module_name)
+        r_print.info("Convert(ISOLATIONS): " + module_name)
 
     def __convert_dependons(self, repo_for_rdbox, module_name, helm_module):
         multi_arch_dict = {}
+        # Continue even if it fails.
         try:
             helm_module.specify_storageClass_for_rdbox()
             helm_module.specify_ingress_for_rdbox()
-            multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
         except Exception:
             import traceback
-            print(traceback.format_exc())
+            r_logger.warning(traceback.format_exc())
+        # Stop even if it fails.
+        try:
+            multi_arch_dict = helm_module.specify_nodeSelector_for_rdbox()
+            if len(multi_arch_dict.keys()) > 0:
+                r_logger.debug('It has Multi Arch Image.')
+                r_logger.debug(multi_arch_dict)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
             raise ChartInSpecificDirConverError('Error in specify_nodeSelector_for_rdbox')
         ###
         dir_to_save_icon = os.path.join(self.repo.get_dirpath(), 'icons')
@@ -396,7 +425,7 @@ class ChartInSpecificDir(object):
             self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
         else:
             raise ChartInSpecificDirConverError(path_of_generation_result)
-        print("Convert(DEPENDONS): " + module_name)
+        r_print.info("Convert(DEPENDONS): " + module_name)
 
     def __pack(self, repo_for_rdbox):
         helm_command = HelmCommand()
@@ -469,7 +498,7 @@ class ChartInSpecificDir(object):
                     if helm_module.has_module_of_dependencies(candidate_module_name):
                         del_keys.append(module_name)
         for key in list(set(del_keys)):
-            print('Delete(UNKNOWN_DEP): ' + key)
+            r_print.info('Delete(UNKNOWN_DEP): ' + key)
             self.__delete_entity_by_module_name(key)
             dependons.pop(key)
         return (ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_ISOLATIONS).__update(isolations),
@@ -509,10 +538,11 @@ class ChartInSpecificDir(object):
             if helm_module.has_commentout_nodeSelector() is True:
                 del_keys_values_not_has_key_nodeSelector.append(module_name)
                 helm_module.correct_commentout_nodeSelector()
+                r_print.info("Modify(nodeSelector): " + module_name)
         for del_key in del_keys_values_not_has_key_nodeSelector:
             invalid_module.pop(del_key)
         for module_name in list(set(invalid_module.keys())):
-            print('Delete(nodeSelector): ' + module_name)
+            r_print.info('Delete(nodeSelector): ' + module_name)
         return list(set(invalid_module.keys()))
 
     def __filter_valuesyaml_imagetag(self):
@@ -524,7 +554,7 @@ class ChartInSpecificDir(object):
             if helm_module.has_expected_structure_for_imagetag() is False:
                 invalid_module.append(module_name)
         for module_name in list(set(invalid_module)):
-            print('Delete(imageTag): ' + module_name)
+            r_print.info('Delete(imageTag): ' + module_name)
         return list(set(invalid_module))
 
     def __filter_deprecate(self):
@@ -533,7 +563,7 @@ class ChartInSpecificDir(object):
             if helm_module.is_contain_deprecate_string_at_head():
                 invalid_module.append(module_name)
         for module_name in list(set(invalid_module)):
-            print('Delete(deprecate): ' + module_name)
+            r_print.info('Delete(deprecate): ' + module_name)
         return list(set(invalid_module))
 
     def __filter_tldr(self):
@@ -545,7 +575,7 @@ class ChartInSpecificDir(object):
             if helm_module.is_contain_tldr_string() is False:
                 invalid_module.append(module_name)
         for module_name in list(set(invalid_module)):
-            print('Delete(TLDR): ' + module_name)
+            r_print.info('Delete(TLDR): ' + module_name)
         return list(set(invalid_module))
 
     def __get_module_list(self):
@@ -675,8 +705,9 @@ class ChartYaml(object):
                     pass
             ##################################################
             file_text = yaml.dump(obj_values)
-        except Exception as e:
-            print(e)
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
         with open(self.full_path, 'w') as file:
             file.write(file_text)
 
@@ -695,8 +726,9 @@ class ReadmeMd(object):
                         if l_XXX_i[0] < 10:
                             return True
                     return False
-                except Exception as e:
-                    print(e)
+                except Exception:
+                    import traceback
+                    r_logger.warning(traceback.format_exc())
         except FileNotFoundError:
             return False
 
@@ -714,8 +746,9 @@ class ReadmeMd(object):
                     if len(l_XXX_i) > 0:
                         return True
                     return False
-                except Exception as e:
-                    print(e)
+                except Exception:
+                    import traceback
+                    r_logger.warning(traceback.format_exc())
         except FileNotFoundError:
             return False
 
@@ -741,8 +774,9 @@ class ReadmeMd(object):
                         latest_helm_install_command = ''
                     latest_helm_install_command = latest_helm_install_command.replace('$ ', '').strip()
                     return latest_helm_install_command
-                except Exception as e:
-                    print(e)
+                except Exception:
+                    import traceback
+                    r_logger.warning(traceback.format_exc())
         except FileNotFoundError:
             return ''
 
