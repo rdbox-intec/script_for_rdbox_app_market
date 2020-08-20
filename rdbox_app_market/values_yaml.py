@@ -14,26 +14,28 @@ class ValuesYaml(object):
         self.full_path = os.path.join(module_dir_path, 'values.yaml')
 
     def has_active_nodeSelector(self):
-        with open(self.full_path) as file:
-            try:
+        try:
+            with open(self.full_path) as file:
                 obj_values = yaml.safe_load(file)
                 if Util.has_key_recursion(obj_values, 'nodeSelector') is None:
                     return False
                 else:
                     return True
-            except Exception as e:
-                print(e)
+        except Exception as e:
+            print(e)
+            return False
 
     def has_commentout_nodeSelector(self):
-        with open(self.full_path) as file:
-            try:
+        try:
+            with open(self.full_path) as file:
                 l_XXX_i = [i for i, line in enumerate(file.readlines()) if '# nodeSelector: ' in line]
                 if len(l_XXX_i) > 0:
                     return True
                 else:
                     return False
-            except Exception as e:
-                print(e)
+        except Exception as e:
+            print(e)
+            return False
 
     def has_expected_structure_for_imagetag(self):
         try:
@@ -45,20 +47,21 @@ class ValuesYaml(object):
                         return True
                     else:
                         return False
-        except Exception:
+        except Exception as e:
+            print(e)
             return False
 
     def correct_commentout_nodeSelector(self):
         file_text = ''
-        with open(self.full_path) as file:
-            try:
+        try:
+            with open(self.full_path) as file:
                 file_text = file.read()
                 file_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
-            except Exception as e:
-                print(e)
-        with open(self.full_path, 'w') as file:
-            print("Modify(nodeSelector): " + self.module_name)
-            file.write(file_text)
+            with open(self.full_path, 'w') as file:
+                print("Modify(nodeSelector): " + self.module_name)
+                file.write(file_text)
+        except Exception as e:
+            print(e)
 
     def specify_nodeSelector_for_rdbox(self):
         file_text = ""

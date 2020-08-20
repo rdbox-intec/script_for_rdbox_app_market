@@ -14,9 +14,20 @@ class MissionControl(object):
             shutil.rmtree(top_dir_path)
         except FileNotFoundError:
             os.makedirs(top_dir_path, exist_ok=True)
+        # ----------------- #
         repos = []
-        repos.append(ReferenceGithubRepos('https://github.com/bitnami/charts.git', 'master', 'bitnami', True, 999))
-        repos.append(ReferenceGithubRepos('https://github.com/helm/charts.git', 'master', 'stable', False, 500))
+        repos.append(ReferenceGithubRepos(
+            'https://github.com/bitnami/charts.git',
+            'master',
+            specific_dir_from_top='bitnami',
+            check_tldr=True,
+            priority=999))
+        repos.append(ReferenceGithubRepos(
+            'https://github.com/helm/charts.git',
+            'master',
+            specific_dir_from_top='stable',
+            check_tldr=False,
+            priority=500))
         # ----------------- #
         collector = Collector(repos)
         isolations_collect_result, dependons_collect_result = collector.work()

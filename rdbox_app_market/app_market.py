@@ -59,7 +59,7 @@ class Publisher(object):
 
     like a publishing company.
     """
-    def __init__(self, isolations, dependons):
+    def __init__(self, isolations: ChartInSpecificDir, dependons: ChartInSpecificDir):
         """ constructor
 
         Args:
@@ -256,7 +256,7 @@ class ChartInSpecificDir(object):
             list[str]: List of module names that failed to be converted.
         """
         invalid_key_list = []
-        p = Pool(int(os.cpu_count() * 0.7))
+        p = Pool(int(os.cpu_count() * 0.85))
         result = p.starmap(self.convert_detail, zip(repeat(repo_for_rdbox), self.get_all_HelmModule_mapped_by_module_name().keys(), self.get_all_HelmModule_mapped_by_module_name().values()))
         for invalids in result:
             invalid_key_list.extend(invalids)
