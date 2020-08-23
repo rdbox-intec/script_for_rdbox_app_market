@@ -14,101 +14,108 @@ r_print = getLogger('rdbox_cli').getChild("stdout")
 
 
 class ValuesYaml(object):
-    def __init__(self, module_dir_path, module_name):
+    def __init__(self, module_dir_path: str, module_name: str):
         self.module_name = module_name
         self.full_path = os.path.join(module_dir_path, 'values.yaml')
 
-    def has_active_nodeSelector(self):
+    def has_active_nodeSelector(self) -> bool:
         try:
-            with open(self.full_path) as file:
-                obj_values = yaml.safe_load(file)
-                if Util.has_key_recursion(obj_values, 'nodeSelector') is None:
-                    return False
-                else:
-                    return True
+            lines = self.readlines()
+            obj_values = yaml.safe_load(''.join(lines))
+            if Util.has_key_recursion(obj_values, 'nodeSelector') is None:
+                return False
+            else:
+                return True
         except Exception:
             import traceback
             r_logger.warning(traceback.format_exc())
             return False
 
-    def has_commentout_nodeSelector(self):
+    def has_commentout_nodeSelector(self) -> bool:
         try:
-            with open(self.full_path) as file:
-                l_XXX_i = [i for i, line in enumerate(file.readlines()) if '# nodeSelector: ' in line]
-                if len(l_XXX_i) > 0:
-                    return True
-                else:
-                    return False
-        except Exception:
-            import traceback
-            r_logger.warning(traceback.format_exc())
-            return False
-
-    def has_expected_structure_for_imagetag(self):
-        try:
-            with open(self.full_path) as file:
-                values_yaml_obj = yaml.safe_load(file)
-                values_yaml_obj = Util.has_key_recursion(values_yaml_obj, 'image')
-                if values_yaml_obj is not None:
-                    if ('repository' in values_yaml_obj or 'name' in values_yaml_obj) and ('tag' in values_yaml_obj):
-                        return True
-                    else:
-                        return False
+            lines = self.readlines()
+            l_XXX_i = [i for i, line in enumerate(lines) if '# nodeSelector: ' in line]
+            if len(l_XXX_i) > 0:
+                return True
+            else:
+                return False
         except Exception:
             import traceback
             r_logger.warning(traceback.format_exc())
             return False
 
     def correct_commentout_nodeSelector(self):
-        file_text = ''
         try:
-            with open(self.full_path) as file:
-                file_text = file.read()
-                file_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
-            with open(self.full_path, 'w') as file:
-                file.write(file_text)
+            is_changed = False
+            file_text = ''.join(self.readlines())
+            write_text = file_text.replace('# nodeSelector: ', 'nodeSelector: {} #')
+            if file_text != write_text:
+                self.write_text(write_text)
+                is_changed = True
+            return write_text, is_changed
+        except Exception as e:
+            import traceback
+            r_logger.warning(traceback.format_exc())
+            raise e
+
+    def has_expected_structure_for_imagetag(self):
+        try:
+            lines = self.readlines()
+            values_yaml_obj = yaml.safe_load(''.join(lines))
+            values_yaml_obj = Util.has_key_recursion(values_yaml_obj, 'image')
+            if values_yaml_obj is not None:
+                if ('repository' in values_yaml_obj or 'name' in values_yaml_obj) and ('tag' in values_yaml_obj):
+                    return True
+                else:
+                    return False
         except Exception:
             import traceback
             r_logger.warning(traceback.format_exc())
+            return False
 
     def specify_nodeSelector_for_rdbox(self):
         file_text = ""
-        lines = []
-        with open(self.full_path) as file:
-            lines = file.readlines()
+        lines = self.readlines()
         flt = FilterOfNodeSelector(self.module_name, lines)
         file_text, is_changed = flt.filter()
-        if is_changed:
-            with open(self.full_path, 'w') as file:
-                file.write(file_text)
         multi_arch_dict = flt.get_multi_arch_dict(lines)
-        return multi_arch_dict
+        if is_changed:
+            self.write_text(file_text)
+        return file_text, is_changed, multi_arch_dict
 
     def specify_storageClass_for_rdbox(self):
         file_text = ''
-        lines = []
-        with open(self.full_path) as file:
-            lines = file.readlines()
+        lines = self.readlines()
         flt = FilterOfStorageClass(self.module_name, lines)
         file_text, is_changed = flt.filter()
         if is_changed:
-            with open(self.full_path, 'w') as file:
-                file.write(file_text)
+            self.write_text(file_text)
+        return file_text, is_changed
 
     def specify_ingress_for_rdbox(self):
+        file_text = ""
+        lines = self.readlines()
+        flt = FilterOfIngress(self.module_name, lines)
+        lines, is_changed = flt.filter()
+        file_text = ''.join(lines)
+        if is_changed:
+            self.write_text(file_text)
+        return file_text, is_changed
+
+    def readlines(self):
         lines = []
         with open(self.full_path) as file:
             lines = file.readlines()
-        flt = FilterOfIngress(self.module_name, lines)
-        lines, is_changed = flt.filter()
-        if is_changed:
-            with open(self.full_path, 'w') as file:
-                file.write(''.join(lines))
+        return lines
+
+    def write_text(self, file_text):
+        with open(self.full_path, 'w') as file:
+            file.write(file_text)
 
 
 class FilterOfStorageClass(object):
     def __init__(self, module_name: str, lines: List[str]):
-        """Filter of ingress
+        """Filter of storageClass
 
         Args:
             module_name (str): module name
@@ -160,7 +167,8 @@ class FilterOfStorageClass(object):
                     if re.match(r'^\s*#*\s*storageClass:', line):
                         # find in global tag.
                         text_in_global_tag = 'global:\n' + text_in_global_tag
-                        text_in_global_tag += ' ' * indent_unit + 'storageClass: ' + rdbox_app_market.config.get('kubernetes', 'common_storage') + '\n'
+                        storageClass = rdbox_app_market.config.get('kubernetes', 'common_storage')
+                        text_in_global_tag += ' ' * indent_unit + 'storageClass: ' + storageClass + '\n'
                         is_indent_of_global_tag = False
                         file_text += text_in_global_tag
                         continue
@@ -182,12 +190,13 @@ class FilterOfStorageClass(object):
         for i, line in enumerate(lines):
             if re.match(r'^\s*#*\s*storageClass:\s[\-\_\/\"\'a-zA-Z0-9]+', line):
                 indent_of_backward, indent_of_forward = self.__get_indent_of_back_and_forward(indent_list, i)
+                storageClass = rdbox_app_market.config.get('kubernetes', 'common_storage')
                 if indent_of_backward == indent_of_forward:
-                    file_text = file_text + ' ' * indent_of_backward + 'storageClass: ' + rdbox_app_market.config.get('kubernetes', 'common_storage') + '\n'
+                    file_text = file_text + ' ' * indent_of_backward + 'storageClass: ' + storageClass + '\n'
                 else:
                     line_indent = re.sub(r'(^\s*)#*(\s*)(storageClass:\s[\[\]\.\_\-\"\'\/a-zA-Z0-9]*\n)', r'\1', line)
                     if len(line_indent) == indent_of_backward or len(line_indent) == indent_of_forward:
-                        file_text = file_text + line_indent + 'storageClass: ' + rdbox_app_market.config.get('kubernetes', 'common_storage') + '\n'
+                        file_text = file_text + line_indent + 'storageClass: ' + storageClass + '\n'
                     else:
                         file_text += line
             else:
@@ -557,13 +566,15 @@ class FilterOfStrHostsIngress(BaseFilterOfIngress):
                     self.lines[index] = line
                     content = yaml.dump([{'secretName': rdbox_app_market.config.get('kubernetes', 'common_cert'), 'hosts': [hosts_item]}], indent=self.indent_unit)
                     for i, text in enumerate(content.split('\n')):
-                        self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
+                        if text != '':
+                            self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
                     continue
                 if len(tls_item) == 0:
                     self.lines[index] = ' ' * now_indent + 'tls:' + '\n'
                     content = yaml.dump([{'secretName': rdbox_app_market.config.get('kubernetes', 'common_cert'), 'hosts': [hosts_item]}], indent=self.indent_unit)
                     for i, text in enumerate(content.split('\n')):
-                        self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
+                        if text != '':
+                            self.lines_insert(index + i + 1, ' ' * now_indent + ' ' * self.indent_unit + text + '\n')
                     continue
                 elif len(tls_item) > 0:
                     self.lines[index] = line
@@ -661,8 +672,10 @@ class FilterOfNodeSelector(object):
                 pass
             aligned_nodeSelector_text = yaml.dump(nodeSelector_obj, indent=self.indent_unit)
             for text in aligned_nodeSelector_text.split('\n'):
-                file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
+                if text != '':
+                    file_text = file_text + ' ' * self.node_selector_indent + text + '\n'
             self.__reset()
+            file_text += line
         else:
             self.original_nodeSelector_text += line
         return file_text
