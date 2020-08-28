@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import sys
 import logging
 import argparse
@@ -16,9 +15,8 @@ def r_logger_setup():
     # r_logger
     r_logger = getLogger('rdbox_cli')
     r_logger.setLevel(logging.DEBUG)
-    users = "%s/%s" % (os.environ['SUDO_USER'], os.environ['USER']) if 'SUDO_USER' in os.environ else os.environ['USER']
     handler_format = Formatter(
-        fmt='%(asctime)s - {users} - %(process)d - %(levelname)s - %(message)s'.format(users=users), datefmt='%Y-%m-%dT%H:%M:%S%z')
+        fmt='%(asctime)s - %(process)d - %(levelname)s - %(message)s', datefmt='%Y-%m-%dT%H:%M:%S%z')
     file_path = rdbox_app_market.config.get("rdbox", "log_path")
     file_handler = GroupWriteRotatingFileHandler(
         filename=file_path, maxBytes=10 * 1024 * 1024, backupCount=10)
@@ -38,12 +36,14 @@ def r_logger_setup():
 
 
 def launch(type: str, exec_publish: bool):
+    ret = False
     if type == 'bot-gen':
-        VendorMissionControl.launch(exec_publish)
+        ret = VendorMissionControl.launch(exec_publish)
     elif type == 'manually':
-        RDBOXMissionControl.launch(exec_publish)
+        ret = RDBOXMissionControl.launch(exec_publish)
     else:
         r_print.error("argment error.")
+    return ret
 
 
 def main():
@@ -57,13 +57,14 @@ def main():
     args = parser.parse_args()
     r_logger.info("ARGS: {args}".format(args=args))
     # launch
-    launch(args.type, args.publish)
-    # End
-    r_print.info("[rdbox_app_market] End.")
+    ret = launch(args.type, args.publish)
+    return ret
 
 
 if __name__ == '__main__':
     ret = main()
+    # End
+    r_print.info("[rdbox_app_market] End.")
     if ret:
         sys.exit(0)
     else:
