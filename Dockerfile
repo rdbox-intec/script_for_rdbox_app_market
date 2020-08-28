@@ -29,4 +29,7 @@ RUN mkdir -p /root/.ssh && \
     chmod 700 /root/.ssh && \
     chmod 600 /root/.ssh/*
 
+RUN git config --global user.name "rdbox-bot" && \
+    git config --global user.email info-rdbox@intec.co.jp
+
 CMD python3 -m rdbox_app_market
