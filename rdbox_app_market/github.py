@@ -60,6 +60,9 @@ class GithubRepos(object):
         origin = self.repo.remote(name='origin')
         origin.push()
 
+    def is_manually_repo(self):
+        raise Exception
+
 
 class ReferenceGithubRepos(GithubRepos):
     """A Git repository to reference when creating a helm chart for rdbox_app_market.
@@ -92,6 +95,12 @@ class ReferenceGithubRepos(GithubRepos):
         except FileNotFoundError:
             os.makedirs(self.repo_dir, exist_ok=True)
         self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.branch, depth=1)
+
+    def is_manually_repo(self):
+        ret = False
+        if self.url == 'https://github.com/rdbox-intec/helm_chart_for_rdbox.git':
+            ret = True
+        return ret
 
 
 class RdboxGithubRepos(GithubRepos):
@@ -135,3 +144,9 @@ class RdboxGithubRepos(GithubRepos):
                     shutil.rmtree(target)
         except FileNotFoundError:
             pass
+
+    def is_manually_repo(self):
+        ret = False
+        if self.specific_dir_from_top == 'manually':
+            ret = True
+        return ret

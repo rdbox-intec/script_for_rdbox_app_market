@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import os
+import sys
 import logging
+import argparse
 import rdbox_app_market.config
 from rdbox_app_market.group_write_rotating_fileHandler import GroupWriteRotatingFileHandler
-from rdbox_app_market.mission_control import MissionControl
+from rdbox_app_market.mission_control import VendorMissionControl, RDBOXMissionControl
 from logging import getLogger, StreamHandler, Formatter
 
 r_logger = getLogger('rdbox_cli')
@@ -35,12 +37,34 @@ def r_logger_setup():
     r_print.addHandler(stream_handler)
 
 
-def launch():
-    MissionControl.launch()
+def launch(type: str, exec_publish: bool):
+    if type == 'bot-gen':
+        VendorMissionControl.launch(exec_publish)
+    elif type == 'manually':
+        RDBOXMissionControl.launch(exec_publish)
+    else:
+        r_print.error("argment error.")
+
+
+def main():
+    # logging
+    r_logger_setup()
+    r_print.info("[rdbox_app_market] Start.")
+    # args
+    parser = argparse.ArgumentParser(description='RDBOX service.')
+    parser.add_argument('type', help='bot-gen OR manually')
+    parser.add_argument('--publish', action='store_true')
+    args = parser.parse_args()
+    r_logger.info("ARGS: {args}".format(args=args))
+    # launch
+    launch(args.type, args.publish)
+    # End
+    r_print.info("[rdbox_app_market] End.")
 
 
 if __name__ == '__main__':
-    r_logger_setup()
-    r_print.info("[rdbox_app_market] Start.")
-    launch()
-    r_print.info("[rdbox_app_market] End.")
+    ret = main()
+    if ret:
+        sys.exit(0)
+    else:
+        sys.exit(1)

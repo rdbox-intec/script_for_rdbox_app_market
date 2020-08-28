@@ -435,11 +435,11 @@ class BaseFilterOfIngress(object):
         self.__update_lines_info()
 
     def build_hostname(self, structure):
-        hostname = '.'.join(structure.get_struct()[1:-1])
+        hostname = '-'.join(structure.get_struct()[1:-1])
         if hostname == '':
             hostname = self.module_name + '.' + rdbox_app_market.config.get('kubernetes', 'common_domain')
         else:
-            hostname = hostname + '.' + self.module_name + '.' + rdbox_app_market.config.get('kubernetes', 'common_domain')
+            hostname = hostname + '-' + self.module_name + '.' + rdbox_app_market.config.get('kubernetes', 'common_domain')
         return hostname
 
     def __get_indent_info(self):
@@ -668,6 +668,7 @@ class FilterOfNodeSelector(object):
             nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/os', 'linux')
             if not is_multi_arch:
                 nodeSelector_obj.get('nodeSelector').setdefault('beta.kubernetes.io/arch', 'amd64')
+                nodeSelector_obj.get('nodeSelector').setdefault('node.rdbox.com/location', 'hq')
             else:
                 pass
             aligned_nodeSelector_text = yaml.dump(nodeSelector_obj, indent=self.indent_unit)

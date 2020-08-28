@@ -25,6 +25,15 @@ class HelmCommand(object):
             # Setuped PATH
             self.helm = 'helm'
 
+    def dep_update(self, specific_dir_path, module_name):
+        cmd_list = []
+        module_dir_path = os.path.join(specific_dir_path, module_name)
+        cmd_list.append(self.helm)
+        cmd_list.append('dep')
+        cmd_list.append('update')
+        cmd_list.append(module_dir_path)
+        subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
     def template(self, specific_dir_path, module_name, set_list=[]):
         cmd_list = []
         module_dir_path = os.path.join(specific_dir_path, module_name)

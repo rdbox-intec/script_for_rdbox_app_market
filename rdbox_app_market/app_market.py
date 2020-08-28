@@ -9,13 +9,13 @@ import re
 import urllib.request
 
 from pathlib import Path
-from multiprocessing import Pool
+from multiprocessing import Pool, Manager
 from itertools import repeat
 
 import rdbox_app_market.config
 from rdbox_app_market.util import Util
 from rdbox_app_market.helm import HelmCommand
-from rdbox_app_market.github import GithubRepos, RdboxGithubRepos
+from rdbox_app_market.github import GithubRepos, RdboxGithubRepos, ReferenceGithubRepos
 from rdbox_app_market.values_yaml import ValuesYaml
 
 from logging import getLogger
@@ -28,19 +28,15 @@ class Collector(object):
 
     Also, if the format is not specified, the Chart will be excluded.
     """
-    def __init__(self, reference_repos):
+    def __init__(self, src_repos: ReferenceGithubRepos, dst_repo: RdboxGithubRepos):
         """ constructor
 
         Args:
-            reference_repos (list[ReferenceGithubRepos]): List of Git repositories to reference when generating a Helm Chart for RDBOX
+            src_repos (list[ReferenceGithubRepos]): List of Git repositories to reference when generating a Helm Chart for RDBOX
+            dst_repo (RdboxGithubRepos): The output destination GitHub repository.
         """
-        self.reference_repos = reference_repos
-        self.rdbox_master_repo = RdboxGithubRepos(
-            'git@github.com:rdbox-intec/rdbox_app_market.git',
-            'master',
-            specific_dir_from_top='rdbox',
-            check_tldr=False,
-            priority=999)
+        self.src_repos = src_repos
+        self.rdbox_master_repo = dst_repo
 
     def work(self) -> tuple[ChartInSpecificDir]:
         """Do the work
@@ -49,7 +45,7 @@ class Collector(object):
             Tuple[ChartInSpecificDir, ChartInSpecificDir]: 1st is Non-dependent charts. 2nd is Charts with dependencies.
         """
         chart_in_specific_dir = ChartInSpecificDir(self.rdbox_master_repo, ChartInSpecificDir.ANNOTATION_OTHERS)
-        for repo in self.reference_repos:
+        for repo in self.src_repos:
             r_print.info('------------------- {url} ------------------'.format(url=repo.get_url()))
             ref_chart_in_specific_dir = ChartInSpecificDir(repo, ChartInSpecificDir.ANNOTATION_OTHERS)
             now_processing_isolations, now_processing_dependons = ref_chart_in_specific_dir.preprocessing()
@@ -66,24 +62,23 @@ class Publisher(object):
 
     like a publishing company.
     """
-    def __init__(self, isolations: ChartInSpecificDir, dependons: ChartInSpecificDir):
+    def __init__(self, isolations: ChartInSpecificDir, dependons: ChartInSpecificDir, dest_repo: RdboxGithubRepos):
         """ constructor
 
         Args:
             isolations (ChartInSpecificDir): Chart that is independent of other Charts.
             dependons (ChartInSpecificDir): Chart that depend on other Charts.
+            dst_repo (RdboxGithubRepos): The output destination GitHub repository.
         """
         self.isolations = isolations
         self.dependons = dependons
-        self.rdbox_gh_repo = RdboxGithubRepos(
-            'git@github.com:rdbox-intec/rdbox_app_market.git',
-            'gh-pages',
-            specific_dir_from_top='rdbox',
-            check_tldr=False,
-            priority=999)
+        self.rdbox_gh_repo = dest_repo
 
-    def work(self) -> ChartInSpecificDir:
+    def work(self, exec_publish: bool) -> ChartInSpecificDir:
         """Do the work
+
+        Args:
+            exec_publish (bool): Do you want to publish it?
 
         - convert
             - specify_nodeSelector_for_rdbox
@@ -107,7 +102,7 @@ class Publisher(object):
         _ = self.dependons.convert(self.rdbox_gh_repo)
         #########
         rdbox_app_market_all_chart = self.dependons.merge(self.isolations)
-        rdbox_app_market_all_chart.publish(self.rdbox_gh_repo)
+        rdbox_app_market_all_chart.publish(self.rdbox_gh_repo, exec_publish)
         return rdbox_app_market_all_chart
 
 
@@ -140,8 +135,9 @@ class ChartInSpecificDir(object):
         else:
             raise ValueError
         self.specific_dirpath = self.repo.get_dirpath_with_prefix()
-        self.all_HelmModule_mapped_by_module_name = {}
-        self.all_packaged_tgz_path_mapped_by_module_name = {}
+        manager = Manager()
+        self.all_HelmModule_mapped_by_module_name = manager.dict()
+        self.all_packaged_tgz_path_mapped_by_module_name = manager.dict()
 
     def __repr__(self):
         return str(self.get_all_HelmModule_mapped_by_module_name())
@@ -243,7 +239,12 @@ class ChartInSpecificDir(object):
         """
         self.all_HelmModule_mapped_by_module_name = self.get_HelmModule_all()
         ########
-        isolations_collect_result, dependons_collect_result = self.__excludes_unknown_dependencies()
+        isolations_collect_result, dependons_collect_result = self.__split_module_by_dependencies()
+        if self.get_repo().is_manually_repo():
+            isolations_collect_result = ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_ISOLATIONS).__update(isolations_collect_result)
+            dependons_collect_result = ChartInSpecificDir(self.repo, ChartInSpecificDir.ANNOTATION_DEPENDONS).__update(dependons_collect_result)
+        else:
+            isolations_collect_result, dependons_collect_result = self.__excludes_unknown_dependencies(isolations_collect_result, dependons_collect_result)
         ########
         invalid_key_list = isolations_collect_result.__get_invalid_key_list()
         isolations_collect_result.remove_by_key_list(invalid_key_list)
@@ -253,7 +254,6 @@ class ChartInSpecificDir(object):
         dependons_collect_result.remove_by_key_list(invalid_key_list)
         ########
         return isolations_collect_result, dependons_collect_result
-        return self.__analyze()
 
     def convert(self, repo_for_rdbox: GithubRepos) -> list[str]:
         """Convert to RDBOX App Market chart.
@@ -274,19 +274,21 @@ class ChartInSpecificDir(object):
         self.remove_by_key_list(invalid_key_list)
         return list(set(invalid_key_list))
 
-    def publish(self, repo_for_rdbox: GithubRepos) -> list[str]:
+    def publish(self, rdbox_gh_repo: GithubRepos, exec_publish: bool) -> list[str]:
         """Push (publish) the corresponding Git repository in order to make it presentable for publishing helm charts.
 
         Args:
-            repo_for_rdbox (GithubRepos): Github repository (like gh-pages) for publishing RDBOX App Market
+            rdbox_gh_repo (GithubRepos): Github repository (like gh-pages) for publishing RDBOX App Market
+            exec_publish (bool): Do you want to publish it?
 
         Returns:
             list[str]: List of module names that failed to be published.
         """
         invalid_key_list = []
         try:
-            self.__pack(repo_for_rdbox)
-            # self.__publish(repo_for_rdbox)
+            self.__pack(rdbox_gh_repo)
+            if exec_publish:
+                self.__publish(rdbox_gh_repo)
         except ChartInSpecificDirPackError:
             import traceback
             r_logger.warning(traceback.format_exc())
@@ -354,10 +356,14 @@ class ChartInSpecificDir(object):
         invalid_key_list = []
         try:
             # Core Processing
-            self.__specify_values_yaml(module_name, helm_module)
-            self.__specify_chart_yaml(module_name, helm_module)
-            self.__resolve_dependencies_based_on_requirements_yaml(repo_for_rdbox, module_name, helm_module)
-            self.__generate_package_tgz(module_name, helm_module)
+            if self.get_repo().is_manually_repo():
+                self.__specify_chart_yaml(module_name, helm_module)
+                self.__generate_package_tgz(module_name, helm_module)
+            else:
+                self.__specify_values_yaml(module_name, helm_module)
+                self.__specify_chart_yaml(module_name, helm_module)
+                self.__resolve_dependencies_based_on_requirements_yaml(repo_for_rdbox, module_name, helm_module)
+                self.__generate_package_tgz(module_name, helm_module)
             # Logging
             if self.get_annotation() == ChartInSpecificDir.ANNOTATION_ISOLATIONS:
                 r_print.info("Convert(ISOLATIONS): " + module_name)
@@ -407,6 +413,9 @@ class ChartInSpecificDir(object):
 
     def __generate_package_tgz(self, module_name: str, helm_module: HelmModule):
         helm_command = HelmCommand()
+        if self.get_repo().is_manually_repo():
+            helm_command.dep_update(self.get_specific_dirpath(), module_name)
+            helm_module.get_RequirementsYaml().remove_lock_file()
         # Verify Format
         manifest_map = helm_command.template(self.get_specific_dirpath(), module_name, helm_module.extract_set_options_from_install_command())
         if not self.__is_correct_manifest_map(manifest_map):
@@ -414,28 +423,40 @@ class ChartInSpecificDir(object):
         # Generate Package
         path_of_generation_result = helm_command.package(self.get_specific_dirpath(), module_name, self.get_specific_dirpath())
         if os.path.isfile(path_of_generation_result):
-            self.all_packaged_tgz_path_mapped_by_module_name.setdefault(module_name, path_of_generation_result)
+            self.all_packaged_tgz_path_mapped_by_module_name[module_name] = path_of_generation_result
         else:
             raise ChartInSpecificDirConverError(path_of_generation_result)
 
-    def __pack(self, repo_for_rdbox):
+    def __pack(self, rdbox_gh_repo):
         helm_command = HelmCommand()
         path_of_generation_result = helm_command.repo_index(self.get_specific_dirpath())
         if os.path.isfile(path_of_generation_result):
-            target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
+            target = os.path.join(rdbox_gh_repo.get_dirpath_with_prefix(), os.path.basename(path_of_generation_result))
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.move(path_of_generation_result, target)
         else:
             raise ChartInSpecificDirPackError(path_of_generation_result)
-        for _, path in self.get_all_packaged_tgz_path_mapped_by_module_name().items():
-            target = os.path.join(repo_for_rdbox.get_dirpath_with_prefix(), os.path.basename(path))
+        for _, path in self.all_packaged_tgz_path_mapped_by_module_name.items():
+            target = os.path.join(rdbox_gh_repo.get_dirpath_with_prefix(), os.path.basename(path))
             shutil.move(path, target)
-        repo_for_rdbox.commit()
+        # for gh-pages
+        rdbox_gh_repo.commit()
+        r_print.info('commit gh-pages')
+        # for master
         self.get_repo().commit()
+        r_print.info('commit master')
 
-    def __publish(self, repo_for_rdbox):
-        repo_for_rdbox.push()
-        self.get_repo().push()
+    def __publish(self, rdbox_gh_repo):
+        try:
+            # for gh-pages
+            rdbox_gh_repo.push()
+            r_print.info('push origin gh-pages')
+            # for master
+            self.get_repo().push()
+            r_print.info('push origin master')
+        except Exception:
+            import traceback
+            r_logger.warning(traceback.format_exc())
 
     def __update(self, all_RequirementsYaml_mapped_by_module_name):
         """Overwrite with dict(all_RequirementsYaml_mapped_by_module_name).
@@ -468,7 +489,7 @@ class ChartInSpecificDir(object):
                 continue
         return flg
 
-    def __excludes_unknown_dependencies(self):
+    def __split_module_by_dependencies(self):
         isolations = {}      # An independent helm chart on which no other dependencies exist.
         dependons = {}       # Other helm chart-dependent modules.
         for module_name, helm_module in self.get_all_HelmModule_mapped_by_module_name().items():
@@ -476,6 +497,9 @@ class ChartInSpecificDir(object):
                 isolations.setdefault(module_name, helm_module)
             else:
                 dependons.setdefault(module_name, helm_module)
+        return isolations, dependons
+
+    def __excludes_unknown_dependencies(self, isolations, dependons):
         # candidate for deletion
         candidate = []
         for module_name, helm_module in dependons.items():

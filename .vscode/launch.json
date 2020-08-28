@@ -5,7 +5,10 @@
       "name": "Python All",
       "type": "python",
       "request": "launch",
-      "module": "rdbox_app_market"
+      "module": "rdbox_app_market",
+      "args": [
+        "useful_vendor_tools"
+      ]
     }
   ]
 }
