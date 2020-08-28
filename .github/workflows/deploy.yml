@@ -7,6 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@v2
     - name: Create SSH key
       run: |
         mkdir -p ~/.ssh
@@ -16,7 +17,6 @@ jobs:
       shell: bash
     - name: Run main script
       run: |
-        cd /script_for_rdbox_app_market
         make release-bot
       shell: bash
     - name: Show Executed Log
