@@ -485,8 +485,9 @@ class ChartInSpecificDir(object):
                         r_logger.debug(yaml.dump(manifest))
                         # TODO: Provisional support
                         # It may be missing. 'helm template .' command.
-                        # flg = False
-                        # break
+                        if self.get_annotation() == ChartInSpecificDir.ANNOTATION_ISOLATIONS:
+                            flg = False
+                            break
                 else:
                     flg = True
             else:

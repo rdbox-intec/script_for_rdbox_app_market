@@ -22,12 +22,12 @@ jobs:
       shell: bash
     - name: Run bot-gen script
       run: |
-        rm -rf /tmp/.original.charts
+        sudo rm -rf /tmp/.original.charts
         make release-bot
       shell: bash
     - name: Run manually script
       run: |
-        rm -rf /tmp/.original.charts
+        sudo rm -rf /tmp/.original.charts
         make release-manually
       shell: bash
     - name: Show Executed Log
