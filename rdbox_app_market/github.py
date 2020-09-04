@@ -5,6 +5,10 @@ import shutil
 import glob
 from git import Repo
 
+from logging import getLogger
+r_logger = getLogger('rdbox_cli')
+r_print = getLogger('rdbox_cli').getChild("stdout")
+
 
 class GithubRepos(object):
 
@@ -95,6 +99,9 @@ class ReferenceGithubRepos(GithubRepos):
         except FileNotFoundError:
             os.makedirs(self.repo_dir, exist_ok=True)
         self.repo = Repo.clone_from(self.url, self.repo_dir, branch=self.branch, depth=1)
+        r_logger.debug("Branch Info")
+        r_logger.debug(self.repo.head.reference.commit.hexsha)
+        r_logger.debug(self.repo.head.reference.commit.message)
 
     def is_manually_repo(self):
         ret = False

@@ -4,10 +4,6 @@ import shutil
 import yaml
 import subprocess
 
-from logging import getLogger
-r_logger = getLogger('rdbox_cli')
-r_print = getLogger('rdbox_cli').getChild("stdout")
-
 
 class HelmCommand(object):
     """Wrapped HELM command used by rdbox_app_market.
@@ -36,7 +32,6 @@ class HelmCommand(object):
         cmd_list.append('dep')
         cmd_list.append('update')
         cmd_list.append(module_dir_path)
-        r_logger.debug(cmd_list)
         subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def template(self, specific_dir_path, module_name, set_list=[]):
@@ -51,14 +46,12 @@ class HelmCommand(object):
                 set_str = set_str + '--set' + ' ' + set_item.replace('[', '\[').replace(']', '\]') + '=DUMMY' + ' '          # noqa: W605
             cmd_list.append(set_str)
         cmd_list = ' '.join(cmd_list)
-        r_logger.debug(cmd_list)
         if os.path.isdir(os.path.join(module_dir_path, 'templates', 'tests')):
             shutil.move(os.path.join(module_dir_path, 'templates', 'tests'), os.path.join(module_dir_path, '_tests'))
             ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=True)
             shutil.move(os.path.join(module_dir_path, '_tests'), os.path.join(module_dir_path, 'templates', 'tests'))
         else:
             ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=True)
-        r_logger.debug(ret.stdout)
         chart_map = {}
         for chart in ret.stdout.split('---'):
             if chart.startswith('\n#'):
@@ -77,9 +70,7 @@ class HelmCommand(object):
         cmd_list.append(module_dir_path)
         cmd_list.append('--destination')
         cmd_list.append(dest_dir_path)
-        r_logger.debug(cmd_list)
         ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        r_logger.debug(ret.stdout)
         if ret.returncode == 0:
             path_of_generation_result = ret.stdout.split('it to: ')[-1].strip()
         else:
@@ -93,9 +84,7 @@ class HelmCommand(object):
         cmd_list.append('repo')
         cmd_list.append('index')
         cmd_list.append(specific_dir_path)
-        r_logger.debug(cmd_list)
         ret = subprocess.run(cmd_list, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        r_logger.debug(ret.stdout)
         if ret.returncode == 0:
             path_of_generation_result = os.path.join(specific_dir_path, 'index.yaml')
         else:

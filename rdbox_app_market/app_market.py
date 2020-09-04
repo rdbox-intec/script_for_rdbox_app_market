@@ -481,6 +481,8 @@ class ChartInSpecificDir(object):
                     if 'test' in filename:
                         flg = True
                     else:
+                        r_logger.debug(filename)
+                        r_logger.debug(yaml.dump(manifest))
                         flg = False
                         break
                 else:
