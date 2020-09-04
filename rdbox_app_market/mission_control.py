@@ -114,6 +114,8 @@ class RDBOXMissionControl(MissionControl):
             # ----------------- #
             publisher = Publisher(isolations_collect_result, dependons_collect_result, dst_repo_ghpage)
             _ = publisher.work(exec_publish)
+            return True
         except Exception:
             import traceback
             r_logger.error(traceback.format_exc())
+            return False
