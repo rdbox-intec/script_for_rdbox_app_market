@@ -20,9 +20,15 @@ jobs:
         git config --global user.name "rdbox-bot"
         git config --global user.email info-rdbox@intec.co.jp
       shell: bash
-    - name: Run main script
+    - name: Run bot-gen script
       run: |
+        rm -rf /tmp/.original.charts
         make release-bot
+      shell: bash
+    - name: Run manually script
+      run: |
+        rm -rf /tmp/.original.charts
+        make release-manually
       shell: bash
     - name: Show Executed Log
       run: |

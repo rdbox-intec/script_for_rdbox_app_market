@@ -483,8 +483,10 @@ class ChartInSpecificDir(object):
                     else:
                         r_logger.debug(filename)
                         r_logger.debug(yaml.dump(manifest))
-                        flg = False
-                        break
+                        # TODO: Provisional support
+                        # It may be missing. 'helm template .' command.
+                        # flg = False
+                        # break
                 else:
                     flg = True
             else:
@@ -884,6 +886,9 @@ class RequirementsYaml(object):
             src_path = os.path.join(parent_dir_path, req_obj.get_name())
             dst_path = os.path.join(charts_dir_path, req_obj.get_name())
             shutil.copytree(src_path, dst_path)
+            r_logger.debug('COPY DEP Chart')
+            r_logger.debug(src_path)
+            r_logger.debug(dst_path)
 
     class RequirementObject(object):
         def __init__(self, name, version, repository, condition=None, tags=None):
