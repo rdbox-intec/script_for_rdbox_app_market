@@ -1,4 +1,4 @@
-FROM ubuntu:focal
+FROM ubuntu:focal-20200729
 
 ENV PYTHONPATH "${PYTHONPATH}:/script_for_rdbox_app_market"
 ENV DEBIAN_FRONTEND noninteractive
